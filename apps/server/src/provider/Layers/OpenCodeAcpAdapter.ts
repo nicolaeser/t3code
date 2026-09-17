@@ -322,6 +322,7 @@ function selectAutoApprovedPermissionOption(
   return undefined;
 }
 
+/** OpenCode 2 session adapter over `opencode acp`. */
 export function makeOpenCodeAcpAdapter(
   openCodeSettings: OpenCodeSettings,
   options?: OpenCodeAcpAdapterLiveOptions,

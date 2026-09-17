@@ -33,6 +33,7 @@ export interface OpenCodeAcpRuntimeInput extends Omit<
   readonly runtimeMode?: RuntimeMode;
 }
 
+/** Local OpenCode 2.x uses ACP; OpenCode 1 and an explicit server URL stay on HTTP. */
 export function shouldUseOpenCodeAcp(input: {
   readonly serverUrl: string;
   readonly cliVersion: string | null;
@@ -44,6 +45,7 @@ export function shouldUseOpenCodeAcp(input: {
   );
 }
 
+/** `opencode --auto acp` for full-access; otherwise `opencode acp`. */
 export function openCodeAcpSpawnArgs(runtimeMode?: RuntimeMode): ReadonlyArray<string> {
   switch (runtimeMode) {
     case "full-access":
@@ -53,6 +55,7 @@ export function openCodeAcpSpawnArgs(runtimeMode?: RuntimeMode): ReadonlyArray<s
   }
 }
 
+/** Spawn input for the OpenCode ACP stdio child. */
 export function buildOpenCodeAcpSpawnInput(
   openCodeSettings: OpenCodeAcpRuntimeSettings | null | undefined,
   cwd: string,
@@ -67,6 +70,7 @@ export function buildOpenCodeAcpSpawnInput(
   };
 }
 
+/** Build an ACP session runtime that speaks `opencode acp`. */
 export const makeOpenCodeAcpRuntime = (
   input: OpenCodeAcpRuntimeInput,
 ): Effect.Effect<
@@ -99,6 +103,7 @@ export const makeOpenCodeAcpRuntime = (
     );
   });
 
+/** Map a T3 approval decision to the optionId OpenCode actually offered. */
 export function selectOpenCodePermissionOptionId(
   request: EffectAcpSchema.RequestPermissionRequest,
   decision: ProviderApprovalDecision,
@@ -122,6 +127,7 @@ interface OpenCodeAcpModelSelectionRuntime {
   readonly setModel: (model: string) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
 }
 
+/** Apply model plus advertised config options such as variant and agent. */
 export function applyOpenCodeAcpModelSelection<E>(input: {
   readonly runtime: OpenCodeAcpModelSelectionRuntime;
   readonly model: string | null | undefined;
@@ -264,6 +270,7 @@ function elicitationContentValue(
   return undefined;
 }
 
+/** Turn an ACP elicitation request into T3 user-input questions. */
 export function extractOpenCodeElicitationQuestions(
   request: EffectAcpSchema.ElicitationRequest,
 ): ReadonlyArray<UserInputQuestion> {
@@ -316,6 +323,7 @@ export function extractOpenCodeElicitationQuestions(
   return questions;
 }
 
+/** Convert T3 answers into an ACP elicitation response that matches requestedSchema. */
 export function makeOpenCodeElicitationResponse(
   request: EffectAcpSchema.ElicitationRequest,
   answers: ProviderUserInputAnswers,
@@ -335,7 +343,10 @@ export function makeOpenCodeElicitationResponse(
       content[question.id] = value;
     }
   }
-  if (Object.keys(content).length === 0) {
+  const required = (request.requestedSchema.required ?? []).filter(
+    (name): name is string => typeof name === "string" && name.trim().length > 0,
+  );
+  if (Object.keys(content).length === 0 || required.some((name) => !(name in content))) {
     return { action: { action: "cancel" } };
   }
   return { action: { action: "accept", content } };

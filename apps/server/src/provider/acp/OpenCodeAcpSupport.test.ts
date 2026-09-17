@@ -142,6 +142,25 @@ describe("OpenCode ACP elicitation", () => {
     });
   });
 
+  it("cancels when a required field is missing", () => {
+    const request = {
+      mode: "form",
+      sessionId: "session",
+      message: "Need a name",
+      requestedSchema: {
+        required: ["name"],
+        properties: {
+          name: { type: "string", title: "Name" },
+          note: { type: "string", title: "Note" },
+        },
+      },
+    } as EffectAcpSchema.ElicitationRequest;
+
+    NodeAssert.deepEqual(makeOpenCodeElicitationResponse(request, { note: "later" }), {
+      action: { action: "cancel" },
+    });
+  });
+
   it("parses numeric and boolean fields according to the schema", () => {
     const request = {
       mode: "form",

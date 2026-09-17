@@ -140,6 +140,7 @@ export const runOpenCodeSdk = <A>(
       new OpenCodeRuntimeError({ operation, detail: openCodeRuntimeErrorDetail(cause), cause }),
   }).pipe(Effect.withSpan(`opencode.${operation}`));
 
+/** True for valid semver 2.0.0 and newer. Invalid versions are not treated as 2.x. */
 export function isOpenCodeV2CliVersion(version: string): boolean {
   return parseSemver(version) !== null && compareSemverVersions(version, "2.0.0") >= 0;
 }
@@ -485,6 +486,7 @@ export function openCodeInventoryFromV2Rest(input: {
   return { providerList, agents, skills, commands };
 }
 
+/** Load models, agents, skills, and commands from OpenCode 2 REST list endpoints. */
 export const loadOpenCodeV2Inventory = (input: {
   readonly baseUrl: string;
   readonly directory: string;
