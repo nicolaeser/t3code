@@ -9,6 +9,7 @@ import {
   unwrapProviderCatalog,
   parseAgentListCliOutput,
   parseModelsCliOutput,
+  openCodeServerStartupReady,
   parseOpenCodeServerStartup,
   parseSkillsCliOutput,
   redactOpenCodeServerDiagnostics,
@@ -355,6 +356,33 @@ describe("parseOpenCodeServerStartup", () => {
     );
     NodeAssert.equal(parsed.url, "http://127.0.0.1:49152");
     NodeAssert.equal(parsed.password, "abc_DEF-123");
+  });
+});
+
+describe("openCodeServerStartupReady", () => {
+  it("is ready on the v1 banner without a password line", () => {
+    NodeAssert.equal(
+      openCodeServerStartupReady("opencode server listening on http://127.0.0.1:4096\n", undefined),
+      "http://127.0.0.1:4096",
+    );
+  });
+
+  it("waits for the v2 password line unless a configured password exists", () => {
+    NodeAssert.equal(
+      openCodeServerStartupReady("server listening on http://127.0.0.1:49152\n", undefined),
+      null,
+    );
+    NodeAssert.equal(
+      openCodeServerStartupReady(
+        "server listening on http://127.0.0.1:49152\nserver password abc\n",
+        undefined,
+      ),
+      "http://127.0.0.1:49152",
+    );
+    NodeAssert.equal(
+      openCodeServerStartupReady("server listening on http://127.0.0.1:49152\n", "configured"),
+      "http://127.0.0.1:49152",
+    );
   });
 });
 

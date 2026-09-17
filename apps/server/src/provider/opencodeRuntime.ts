@@ -683,6 +683,26 @@ export function redactOpenCodeServerDiagnostics(output: string): string {
   return output.replace(/server password\s+\S+/gi, "server password [redacted]");
 }
 
+/** Ready when the v1 banner is present, the v2 password line is present, or a configured password already exists. */
+export function openCodeServerStartupReady(
+  output: string,
+  configuredPassword: string | undefined,
+): string | null {
+  const parsed = parseOpenCodeServerStartup(output);
+  if (parsed.url === null) {
+    return null;
+  }
+  const isV1ListenBanner = /opencode server listening on /i.test(output);
+  if (
+    isV1ListenBanner ||
+    parsed.password !== null ||
+    (configuredPassword !== undefined && configuredPassword.length > 0)
+  ) {
+    return parsed.url;
+  }
+  return null;
+}
+
 /** @internal OpenCode 1 prints `opencode server listening on …`. OpenCode 2 prints `server listening on …` plus `server password …`. */
 export function parseOpenCodeServerStartup(output: string): {
   readonly url: string | null;
@@ -1166,13 +1186,10 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
             return [null, null] as const;
           }
           const nextStdout = `${stdout}${chunk}`;
-          const parsed = parseOpenCodeServerStartup(nextStdout);
-          const isV1ListenBanner = /opencode server listening on /i.test(nextStdout);
-          const readyUrl =
-            parsed.url !== null && (isV1ListenBanner || parsed.password !== null)
-              ? parsed.url
-              : null;
-          return [readyUrl, nextStdout.slice(-OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS)] as const;
+          return [
+            openCodeServerStartupReady(nextStdout, serverPassword),
+            nextStdout.slice(-OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS),
+          ] as const;
         }).pipe(
           Effect.flatMap((parsed) =>
             parsed ? Deferred.succeed(readyDeferred, parsed).pipe(Effect.ignore) : Effect.void,
