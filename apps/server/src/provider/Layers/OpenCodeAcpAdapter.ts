@@ -92,6 +92,7 @@ const ACP_PLAN_MODE_ALIASES = ["plan", "architect"];
 const ACP_IMPLEMENT_MODE_ALIASES = ["code", "agent", "default", "chat", "implement"];
 const ACP_APPROVAL_MODE_ALIASES = ["ask"];
 
+/** JSON-encode a value for native-event diagnostics, or undefined if it cannot. */
 function encodeJsonStringForDiagnostics(input: unknown): string | undefined {
   const result = encodeUnknownJsonStringExit(input);
   return Exit.isSuccess(result) ? result.value : undefined;
@@ -152,6 +153,7 @@ interface OpenCodeAcpSessionContext {
   stopped: boolean;
 }
 
+/** Resolve outstanding approval prompts as cancel. */
 function settlePendingApprovalsAsCancelled(
   pendingApprovals: ReadonlyMap<ApprovalRequestId, PendingApproval>,
 ): Effect.Effect<void> {
@@ -165,6 +167,7 @@ function settlePendingApprovalsAsCancelled(
   );
 }
 
+/** Resolve outstanding elicitation prompts with empty answers (cancel). */
 function settlePendingUserInputsAsEmptyAnswers(
   pendingUserInputs: ReadonlyMap<ApprovalRequestId, PendingUserInput>,
 ): Effect.Effect<void> {
@@ -178,10 +181,12 @@ function settlePendingUserInputsAsEmptyAnswers(
   );
 }
 
+/** True for a non-null plain object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Parse a stored OpenCode ACP resume cursor into a session id. */
 function parseOpenCodeAcpResume(raw: unknown): { sessionId: string } | undefined {
   if (!isRecord(raw)) return undefined;
   if (raw.schemaVersion !== OPENCODE_ACP_RESUME_VERSION) return undefined;
@@ -189,6 +194,7 @@ function parseOpenCodeAcpResume(raw: unknown): { sessionId: string } | undefined
   return { sessionId: raw.sessionId.trim() };
 }
 
+/** Lowercase searchable text from an ACP session mode. */
 function normalizeModeSearchText(mode: AcpSessionMode): string {
   return [mode.id, mode.name, mode.description]
     .filter((value): value is string => typeof value === "string" && value.length > 0)
@@ -198,6 +204,7 @@ function normalizeModeSearchText(mode: AcpSessionMode): string {
     .trim();
 }
 
+/** Find an ACP mode whose id or name matches one of the aliases. */
 function findModeByAliases(
   modes: ReadonlyArray<AcpSessionMode>,
   aliases: ReadonlyArray<string>,
@@ -222,10 +229,12 @@ function findModeByAliases(
   return undefined;
 }
 
+/** True when the ACP mode is a plan/architect mode. */
 function isPlanMode(mode: AcpSessionMode): boolean {
   return findModeByAliases([mode], ACP_PLAN_MODE_ALIASES) !== undefined;
 }
 
+/** Pick the ACP mode id for the current T3 interaction and runtime mode. */
 function resolveRequestedModeId(input: {
   readonly interactionMode: ProviderInteractionMode | undefined;
   readonly runtimeMode: RuntimeMode;
@@ -257,6 +266,7 @@ function resolveRequestedModeId(input: {
   );
 }
 
+/** Apply model, option, and session-mode configuration before a turn. */
 function applyRequestedSessionConfiguration<E>(input: {
   readonly runtime: AcpSessionRuntime.AcpSessionRuntime["Service"];
   readonly runtimeMode: RuntimeMode;
@@ -306,6 +316,7 @@ function applyRequestedSessionConfiguration<E>(input: {
   });
 }
 
+/** Option id for full-access auto-approve: allow_always, else allow_once. */
 function selectAutoApprovedPermissionOption(
   request: EffectAcpSchema.RequestPermissionRequest,
 ): string | undefined {

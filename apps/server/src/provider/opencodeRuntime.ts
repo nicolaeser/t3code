@@ -145,6 +145,7 @@ export function isOpenCodeV2CliVersion(version: string): boolean {
   return parseSemver(version) !== null && compareSemverVersions(version, "2.0.0") >= 0;
 }
 
+/** True for 127.0.0.1, ::1, and localhost, including IPv6-bracket forms. */
 function isOpenCodeLoopbackHostname(hostname: string): boolean {
   const normalized = hostname
     .trim()
@@ -181,6 +182,7 @@ const OpenCodeV2InfoSchema = Schema.Struct({
 });
 const decodeOpenCodeV2Info = Schema.decodeUnknownEffect(OpenCodeV2InfoSchema);
 
+/** Basic `opencode:<password>` header, or empty when no password is set. */
 function openCodeBasicAuthHeader(serverPassword: string | undefined): Record<string, string> {
   if (serverPassword === undefined || serverPassword.length === 0) {
     return {};
@@ -190,6 +192,7 @@ function openCodeBasicAuthHeader(serverPassword: string | undefined): Record<str
   };
 }
 
+/** GET an OpenCode 2 JSON path with optional Basic auth and a health timeout. */
 const fetchOpenCodeV2Json = (input: {
   readonly baseUrl: string;
   readonly path: string;
@@ -247,6 +250,7 @@ const fetchOpenCodeV2Json = (input: {
     );
   });
 
+/** Read the OpenCode 2 `/api/info` version string. */
 const fetchOpenCodeV2Info = (input: {
   readonly baseUrl: string;
   readonly serverPassword?: string;
@@ -267,6 +271,7 @@ const fetchOpenCodeV2Info = (input: {
     Effect.map((info) => info.version),
   );
 
+/** Reject non-semver and versions below MINIMUM_OPENCODE_VERSION. */
 function acceptOpenCodeVersion(
   version: string,
   operation: string,
@@ -316,6 +321,7 @@ export const verifyOpenCodeServerVersion = Effect.fn("verifyOpenCodeServerVersio
   return yield* acceptOpenCodeVersion(health.version, "global.health");
 });
 
+/** Prefer `/api/info` when a password is present, else v1 `/global/health`. */
 const resolveOpenCodeServerVersion = (
   client: OpencodeClient,
   connection: {
@@ -362,11 +368,13 @@ export interface OpenCodeInventory {
 
 export type OpenCodeSlashCommand = Pick<Command, "name" | "description" | "source" | "hints">;
 
+/** Read a trimmed non-empty string field from a JSON object. */
 function readString(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
+/** Narrow a JSON value to a plain object. */
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

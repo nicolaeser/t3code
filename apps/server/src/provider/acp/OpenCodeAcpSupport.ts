@@ -164,11 +164,13 @@ export function applyOpenCodeAcpModelSelection<E>(input: {
   });
 }
 
+/** Trim to a non-empty string, otherwise undefined. */
 function nonEmpty(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
 }
 
+/** First non-empty string from a scalar or string-array answer. */
 function firstAnswer(value: unknown): string | undefined {
   if (typeof value === "string") {
     return nonEmpty(value);
@@ -183,6 +185,7 @@ function firstAnswer(value: unknown): string | undefined {
   return undefined;
 }
 
+/** Select options from boolean, enum, oneOf, or array item schemas. */
 function choiceOptions(
   schema: EffectAcpSchema.ElicitationPropertySchema,
 ): Array<{ label: string; description: string; value: string }> {
@@ -225,6 +228,7 @@ function choiceOptions(
   return [];
 }
 
+/** Convert a T3 answer to the ACP content type declared by the property schema. */
 function elicitationContentValue(
   value: unknown,
   schema: EffectAcpSchema.ElicitationPropertySchema | undefined,
