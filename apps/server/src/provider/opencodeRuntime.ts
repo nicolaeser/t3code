@@ -375,7 +375,9 @@ export function openCodeInventoryFromV2Rest(input: {
     } as Model;
   }
 
-  const uniqueConnected = [...new Set(connected.length > 0 ? connected : [...providers.keys()])];
+  const uniqueConnected = [
+    ...new Set(connected.length > 0 || providers.size > 0 ? connected : [...providers.keys()]),
+  ];
   const providerList = {
     all: [...providers.values()],
     connected: uniqueConnected,
@@ -415,7 +417,17 @@ export function openCodeInventoryFromV2Rest(input: {
     const name = record ? readString(record, "name") : undefined;
     if (!name) continue;
     const description = record ? readString(record, "description") : undefined;
-    commands.push(description ? { name, hints: [], description } : { name, hints: [] });
+    const hints =
+      record && Array.isArray(record.hints)
+        ? record.hints.filter((hint): hint is string => typeof hint === "string")
+        : [];
+    const source = record ? readString(record, "source") : undefined;
+    commands.push({
+      name,
+      hints,
+      ...(source ? { source } : {}),
+      ...(description ? { description } : {}),
+    } as OpenCodeSlashCommand);
   }
 
   return { providerList, agents, skills, commands };

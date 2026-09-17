@@ -1,10 +1,17 @@
-import { type OpenCodeSettings, ProviderDriverKind, type RuntimeMode } from "@t3tools/contracts";
+import {
+  type OpenCodeSettings,
+  type ProviderApprovalDecision,
+  type ProviderOptionSelection,
+  ProviderDriverKind,
+  type RuntimeMode,
+} from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 import * as EffectAcpErrors from "effect-acp/errors";
+import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { isOpenCodeV2CliVersion } from "../opencodeRuntime.ts";
 import * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
@@ -90,28 +97,62 @@ export const makeOpenCodeAcpRuntime = (
     );
   });
 
+export function selectOpenCodePermissionOptionId(
+  request: EffectAcpSchema.RequestPermissionRequest,
+  decision: ProviderApprovalDecision,
+): string | undefined {
+  if (decision === "cancel") {
+    return undefined;
+  }
+  const kind =
+    decision === "accept" ? "allow_once" : decision === "decline" ? "reject_once" : "allow_always";
+  const option = request.options.find((entry) => entry.kind === kind);
+  const optionId = option?.optionId.trim();
+  return optionId && optionId.length > 0 ? optionId : undefined;
+}
+
+interface OpenCodeAcpModelSelectionRuntime {
+  readonly getConfigOptions: Effect.Effect<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
+  readonly setConfigOption: (
+    configId: string,
+    value: string | boolean,
+  ) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
+  readonly setModel: (model: string) => Effect.Effect<unknown, EffectAcpErrors.AcpError>;
+}
+
 export function applyOpenCodeAcpModelSelection<E>(input: {
-  readonly runtime: Pick<
-    AcpSessionRuntime.AcpSessionRuntime["Service"],
-    "getConfigOptions" | "setConfigOption" | "setModel"
-  >;
+  readonly runtime: OpenCodeAcpModelSelectionRuntime;
   readonly model: string | null | undefined;
+  readonly options?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
   readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
 }): Effect.Effect<void, E> {
   return Effect.gen(function* () {
+    const advertised = yield* input.runtime.getConfigOptions;
+    const advertisedIds = new Set(advertised.map((option) => option.id));
     const model = input.model?.trim();
-    if (!model) {
-      return;
+    if (model) {
+      if (advertisedIds.has("model")) {
+        yield* input.runtime.setConfigOption("model", model).pipe(Effect.mapError(input.mapError));
+      } else {
+        yield* input.runtime.setModel(model).pipe(Effect.mapError(input.mapError));
+      }
     }
 
-    const options = yield* input.runtime.getConfigOptions;
-    const modelOption = options.find((option) => option.id === "model");
-    if (modelOption) {
-      yield* input.runtime.setConfigOption("model", model).pipe(Effect.mapError(input.mapError));
-      return;
+    for (const selection of input.options ?? []) {
+      if (selection.id === "model" || !advertisedIds.has(selection.id)) {
+        continue;
+      }
+      const value = selection.value;
+      if (typeof value === "boolean") {
+        yield* input.runtime
+          .setConfigOption(selection.id, value)
+          .pipe(Effect.mapError(input.mapError));
+      } else if (typeof value === "string" && value.trim().length > 0) {
+        yield* input.runtime
+          .setConfigOption(selection.id, value)
+          .pipe(Effect.mapError(input.mapError));
+      }
     }
-
-    yield* input.runtime.setModel(model).pipe(Effect.mapError(input.mapError));
   });
 }
 

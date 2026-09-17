@@ -51,7 +51,7 @@ import {
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
 } from "../Errors.ts";
-import { acpPermissionOutcome, mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
+import { mapAcpToAdapterError } from "../acp/AcpAdapterSupport.ts";
 import type * as AcpSessionRuntime from "../acp/AcpSessionRuntime.ts";
 import {
   makeAcpAssistantItemEvent,
@@ -70,6 +70,7 @@ import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import {
   applyOpenCodeAcpModelSelection,
   makeOpenCodeAcpRuntime,
+  selectOpenCodePermissionOptionId,
 } from "../acp/OpenCodeAcpSupport.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
@@ -274,6 +275,7 @@ function applyRequestedSessionConfiguration<E>(input: {
       yield* applyOpenCodeAcpModelSelection({
         runtime: input.runtime,
         model: input.modelSelection.model,
+        ...(input.modelSelection.options ? { options: input.modelSelection.options } : {}),
         mapError: (cause) =>
           input.mapError({
             cause,
@@ -646,13 +648,14 @@ export function makeOpenCodeAcpAdapter(
                       decision: resolved,
                     }),
                   );
+                  const optionId = selectOpenCodePermissionOptionId(params, resolved);
                   return {
                     outcome:
-                      resolved === "cancel"
+                      optionId === undefined
                         ? ({ outcome: "cancelled" } as const)
                         : {
                             outcome: "selected" as const,
-                            optionId: acpPermissionOutcome(resolved),
+                            optionId,
                           },
                   };
                 }),
@@ -874,6 +877,7 @@ export function makeOpenCodeAcpAdapter(
         // reused instead of opening a new turn.
         const steeringTurnId = ctx.promptsInFlight > 0 ? ctx.activeTurnId : undefined;
         const turnId = steeringTurnId ?? TurnId.make(yield* randomUUIDv4);
+        ctx.activeTurnId = turnId;
         // Count this prompt immediately so a superseded in-flight prompt
         // resolving from here on does not settle the turn; the matching
         // decrement is the `ensuring` below.
@@ -898,13 +902,13 @@ export function makeOpenCodeAcpAdapter(
             mapError: ({ cause, method }) =>
               mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
           });
-          ctx.activeTurnId = turnId;
           if (steeringTurnId === undefined) {
             ctx.lastPlanFingerprint = undefined;
             ctx.assistantReply = new OpenCodeAcpReplyTracker();
           }
           ctx.session = {
             ...ctx.session,
+            status: "running",
             activeTurnId: turnId,
             updatedAt: yield* nowIso,
           };
@@ -1009,6 +1013,7 @@ export function makeOpenCodeAcpAdapter(
           }
           ctx.session = {
             ...ctx.session,
+            status: "running",
             activeTurnId: turnId,
             updatedAt: yield* nowIso,
             model: resolvedModel,
@@ -1038,8 +1043,18 @@ export function makeOpenCodeAcpAdapter(
           };
         }).pipe(
           Effect.ensuring(
-            Effect.sync(() => {
+            Effect.gen(function* () {
               ctx.promptsInFlight = Math.max(0, ctx.promptsInFlight - 1);
+              if (ctx.promptsInFlight > 0) {
+                return;
+              }
+              const { activeTurnId: _completedTurnId, ...readySession } = ctx.session;
+              ctx.activeTurnId = undefined;
+              ctx.session = {
+                ...readySession,
+                status: "ready",
+                updatedAt: yield* nowIso,
+              };
             }),
           ),
         );

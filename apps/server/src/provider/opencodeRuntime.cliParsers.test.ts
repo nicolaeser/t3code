@@ -392,7 +392,15 @@ describe("openCodeInventoryFromV2Rest", () => {
       ],
       agents: [{ id: "build", name: "Build", mode: "primary", hidden: false }],
       skills: [{ name: "OpenCode", path: "/builtin/opencode.md", description: "docs" }],
-      commands: [{ name: "init", description: "guided AGENTS.md setup" }],
+      commands: [
+        {
+          name: "init",
+          description: "guided AGENTS.md setup",
+          source: "command",
+          hints: ["$ARGUMENTS"],
+        },
+        { name: "review", source: "skill", hints: [] },
+      ],
     });
 
     NodeAssert.deepEqual(inventory.providerList.connected, ["xai"]);
@@ -400,5 +408,24 @@ describe("openCodeInventoryFromV2Rest", () => {
     NodeAssert.equal(inventory.agents[0]?.name, "build");
     NodeAssert.equal(inventory.skills[0]?.location, "/builtin/opencode.md");
     NodeAssert.equal(inventory.commands?.[0]?.name, "init");
+    NodeAssert.deepEqual(inventory.commands?.[0]?.hints, ["$ARGUMENTS"]);
+    NodeAssert.equal(inventory.commands?.[0]?.source, "command");
+    NodeAssert.equal(inventory.commands?.[1]?.source, "skill");
+  });
+
+  it("does not treat disabled providers as connected", () => {
+    const inventory = openCodeInventoryFromV2Rest({
+      providers: [
+        { id: "xai", name: "xAI", activation: "disabled" },
+        { id: "openai", name: "OpenAI", activation: "disabled" },
+      ],
+      models: [],
+      agents: [],
+      skills: [],
+      commands: [],
+    });
+
+    NodeAssert.deepEqual(inventory.providerList.connected, []);
+    NodeAssert.equal(inventory.providerList.all.length, 2);
   });
 });
