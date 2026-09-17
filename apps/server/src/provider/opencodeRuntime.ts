@@ -380,6 +380,8 @@ export function openCodeInventoryFromV2Rest(input: {
   readonly agents: ReadonlyArray<unknown>;
   readonly skills: ReadonlyArray<unknown>;
   readonly commands: ReadonlyArray<unknown>;
+  readonly connected?: ReadonlyArray<string>;
+  readonly defaultProviders?: ProviderListResponse["default"];
 }): OpenCodeInventory {
   const providers = new Map<
     string,
@@ -394,11 +396,13 @@ export function openCodeInventoryFromV2Rest(input: {
     const name = (record ? readString(record, "name") : undefined) ?? id;
     providers.set(id, { id, name, models: {} });
     const activation = record ? readString(record, "activation") : undefined;
-    if (activation !== "disabled") {
+    const disabled = record?.disabled === true || activation === "disabled";
+    if (!disabled) {
       connected.push(id);
     }
   }
 
+  const explicitConnected = input.connected !== undefined;
   for (const item of input.models) {
     const record = asRecord(item);
     if (!record) continue;
@@ -410,7 +414,9 @@ export function openCodeInventoryFromV2Rest(input: {
     if (!provider) {
       provider = { id: providerID, name: providerID, models: {} };
       providers.set(providerID, provider);
-      connected.push(providerID);
+      if (!explicitConnected) {
+        connected.push(providerID);
+      }
     }
     const variantsRecord = asRecord(record.variants);
     const variants = Array.isArray(record.variants)
@@ -429,12 +435,18 @@ export function openCodeInventoryFromV2Rest(input: {
   }
 
   const uniqueConnected = [
-    ...new Set(connected.length > 0 || providers.size > 0 ? connected : [...providers.keys()]),
+    ...new Set(
+      explicitConnected
+        ? (input.connected ?? [])
+        : connected.length > 0 || providers.size > 0
+          ? connected
+          : [...providers.keys()],
+    ),
   ];
   const providerList = {
     all: [...providers.values()],
     connected: uniqueConnected,
-    default: {},
+    default: input.defaultProviders ?? {},
   } as ProviderListResponse;
 
   const agents: Array<Agent> = [];
@@ -486,6 +498,37 @@ export function openCodeInventoryFromV2Rest(input: {
   return { providerList, agents, skills, commands };
 }
 
+/** Decode `/api/provider` as an array, `{ data }`, or `{ all, connected, default }`. */
+export function unwrapProviderCatalog(payload: unknown): {
+  readonly providers: ReadonlyArray<unknown>;
+  readonly connected?: ReadonlyArray<string>;
+  readonly defaultProviders?: ProviderListResponse["default"];
+} {
+  if (Array.isArray(payload)) {
+    return { providers: payload };
+  }
+  const record = asRecord(payload);
+  if (!record) {
+    return { providers: [] };
+  }
+  if (Array.isArray(record.data)) {
+    return { providers: record.data };
+  }
+  if (Array.isArray(record.all)) {
+    const connected = Array.isArray(record.connected)
+      ? record.connected.filter((id): id is string => typeof id === "string")
+      : undefined;
+    return {
+      providers: record.all,
+      ...(connected !== undefined ? { connected } : {}),
+      ...(record.default !== undefined
+        ? { defaultProviders: record.default as ProviderListResponse["default"] }
+        : {}),
+    };
+  }
+  return { providers: [] };
+}
+
 /** Load models, agents, skills, and commands from OpenCode 2 REST list endpoints. */
 export const loadOpenCodeV2Inventory = (input: {
   readonly baseUrl: string;
@@ -510,19 +553,26 @@ export const loadOpenCodeV2Inventory = (input: {
         { concurrency: "unbounded" },
       );
 
-    const unwrap = (payload: unknown) => {
+    const unwrapList = (payload: unknown) => {
       if (Array.isArray(payload)) return payload;
       const record = asRecord(payload);
-      const data = record?.data;
-      return Array.isArray(data) ? data : [];
+      if (!record) return [];
+      if (Array.isArray(record.data)) return record.data;
+      if (Array.isArray(record.all)) return record.all;
+      return [];
     };
+    const providerCatalog = unwrapProviderCatalog(providersPayload);
 
     return openCodeInventoryFromV2Rest({
-      providers: unwrap(providersPayload),
-      models: unwrap(modelsPayload),
-      agents: unwrap(agentsPayload),
-      skills: unwrap(skillsPayload),
-      commands: unwrap(commandsPayload),
+      providers: providerCatalog.providers,
+      models: unwrapList(modelsPayload),
+      agents: unwrapList(agentsPayload),
+      skills: unwrapList(skillsPayload),
+      commands: unwrapList(commandsPayload),
+      ...(providerCatalog.connected !== undefined ? { connected: providerCatalog.connected } : {}),
+      ...(providerCatalog.defaultProviders !== undefined
+        ? { defaultProviders: providerCatalog.defaultProviders }
+        : {}),
     });
   });
 

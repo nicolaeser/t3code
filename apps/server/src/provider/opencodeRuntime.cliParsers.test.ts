@@ -6,6 +6,7 @@ import {
   isOpenCodeV2CliVersion,
   openCodeInventoryFromV2Rest,
   openCodeV2CredentialUrlError,
+  unwrapProviderCatalog,
   parseAgentListCliOutput,
   parseModelsCliOutput,
   parseOpenCodeServerStartup,
@@ -439,7 +440,7 @@ describe("openCodeInventoryFromV2Rest", () => {
     const inventory = openCodeInventoryFromV2Rest({
       providers: [
         { id: "xai", name: "xAI", activation: "disabled" },
-        { id: "openai", name: "OpenAI", activation: "disabled" },
+        { id: "openai", name: "OpenAI", disabled: true },
       ],
       models: [],
       agents: [],
@@ -449,5 +450,47 @@ describe("openCodeInventoryFromV2Rest", () => {
 
     NodeAssert.deepEqual(inventory.providerList.connected, []);
     NodeAssert.equal(inventory.providerList.all.length, 2);
+  });
+
+  it("preserves explicit connected and default metadata", () => {
+    const inventory = openCodeInventoryFromV2Rest({
+      providers: [{ id: "xai", name: "xAI" }],
+      models: [{ id: "grok-4.6", providerID: "openai", name: "GPT" }],
+      agents: [],
+      skills: [],
+      commands: [],
+      connected: ["xai"],
+      defaultProviders: { xai: "grok-4.6" },
+    });
+
+    NodeAssert.deepEqual(inventory.providerList.connected, ["xai"]);
+    NodeAssert.equal(
+      inventory.providerList.all.some((provider) => provider.id === "openai"),
+      true,
+    );
+    NodeAssert.deepEqual(inventory.providerList.default, { xai: "grok-4.6" });
+  });
+});
+
+describe("unwrapProviderCatalog", () => {
+  it("reads all/connected/default, data arrays, and raw arrays", () => {
+    NodeAssert.deepEqual(
+      unwrapProviderCatalog({
+        all: [{ id: "xai", name: "xAI" }],
+        connected: ["xai"],
+        default: { xai: "grok-4.6" },
+      }),
+      {
+        providers: [{ id: "xai", name: "xAI" }],
+        connected: ["xai"],
+        defaultProviders: { xai: "grok-4.6" },
+      },
+    );
+    NodeAssert.deepEqual(unwrapProviderCatalog({ data: [{ id: "xai" }] }), {
+      providers: [{ id: "xai" }],
+    });
+    NodeAssert.deepEqual(unwrapProviderCatalog([{ id: "xai" }]), {
+      providers: [{ id: "xai" }],
+    });
   });
 });
