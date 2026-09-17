@@ -146,7 +146,7 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
           args: ["--version"],
           environment: processEnv,
         })
-        .pipe(Effect.timeout("10 seconds"), Effect.option);
+        .pipe(Effect.timeout("4 seconds"), Effect.option);
       const cliVersion = Option.isSome(versionProbe)
         ? parseGenericCliVersion(versionProbe.value.stdout)
         : null;

@@ -141,7 +141,38 @@ export const runOpenCodeSdk = <A>(
   }).pipe(Effect.withSpan(`opencode.${operation}`));
 
 export function isOpenCodeV2CliVersion(version: string): boolean {
-  return compareSemverVersions(version, "2.0.0") >= 0;
+  return parseSemver(version) !== null && compareSemverVersions(version, "2.0.0") >= 0;
+}
+
+function isOpenCodeLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname
+    .trim()
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/, "$1");
+  return normalized === "127.0.0.1" || normalized === "::1" || normalized === "localhost";
+}
+
+/** Passwords travel only over HTTPS or loopback HTTP. */
+export function openCodeV2CredentialUrlError(
+  baseUrl: string,
+  serverPassword: string | undefined,
+): string | undefined {
+  if (serverPassword === undefined || serverPassword.length === 0) {
+    return undefined;
+  }
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return "OpenCode server URL is invalid.";
+  }
+  if (url.protocol === "https:") {
+    return undefined;
+  }
+  if (url.protocol === "http:" && isOpenCodeLoopbackHostname(url.hostname)) {
+    return undefined;
+  }
+  return "OpenCode server passwords are only sent over HTTPS or loopback HTTP.";
 }
 
 const OpenCodeV2InfoSchema = Schema.Struct({
@@ -167,6 +198,13 @@ const fetchOpenCodeV2Json = (input: {
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     const url = new URL(input.path, input.baseUrl);
+    const credentialError = openCodeV2CredentialUrlError(url.origin, input.serverPassword);
+    if (credentialError) {
+      return yield* new OpenCodeRuntimeError({
+        operation: `v2.${input.path}`,
+        detail: credentialError,
+      });
+    }
     if (input.directory) {
       url.searchParams.set("location[directory]", input.directory);
     }
@@ -178,13 +216,15 @@ const fetchOpenCodeV2Json = (input: {
       request = request.pipe(HttpClientRequest.setHeader(name, value));
     }
     const response = yield* client.execute(request).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OpenCodeRuntimeError({
-            operation: `v2.${input.path}`,
-            detail: openCodeRuntimeErrorDetail(cause),
-            cause,
-          }),
+      Effect.timeout(OPENCODE_HEALTH_TIMEOUT),
+      Effect.mapError((cause) =>
+        OpenCodeRuntimeError.is(cause)
+          ? cause
+          : new OpenCodeRuntimeError({
+              operation: `v2.${input.path}`,
+              detail: `Timed out or failed requesting ${input.path}: ${openCodeRuntimeErrorDetail(cause)}`,
+              cause,
+            }),
       ),
     );
     if (response.status < 200 || response.status >= 300) {
@@ -1053,10 +1093,13 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
             return [null, null] as const;
           }
           const nextStdout = `${stdout}${chunk}`;
-          return [
-            parseOpenCodeServerStartup(nextStdout).url,
-            nextStdout.slice(-OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS),
-          ] as const;
+          const parsed = parseOpenCodeServerStartup(nextStdout);
+          const isV1ListenBanner = /opencode server listening on /i.test(nextStdout);
+          const readyUrl =
+            parsed.url !== null && (isV1ListenBanner || parsed.password !== null)
+              ? parsed.url
+              : null;
+          return [readyUrl, nextStdout.slice(-OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS)] as const;
         }).pipe(
           Effect.flatMap((parsed) =>
             parsed ? Deferred.succeed(readyDeferred, parsed).pipe(Effect.ignore) : Effect.void,
@@ -1138,15 +1181,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       }
 
       const url = readyOption.value;
-      let startup = parseOpenCodeServerStartup((yield* Ref.get(stdoutRef)) ?? "");
-      const bufferedStdout = (yield* Ref.get(stdoutRef)) ?? "";
-      const isV1ListenBanner = /opencode server listening on /i.test(bufferedStdout);
-      if (startup.password === null && !isV1ListenBanner) {
-        // OpenCode 2 prints `server password …` on the line after the listen
-        // banner. The v1 banner never emits a password, so skip the wait.
-        yield* Effect.sleep("150 millis");
-        startup = parseOpenCodeServerStartup((yield* Ref.get(stdoutRef)) ?? "");
-      }
+      const startup = parseOpenCodeServerStartup((yield* Ref.get(stdoutRef)) ?? "");
       const resolvedPassword = startup.password ?? serverPassword;
 
       // Keep draining both pipes until the process scope closes. Stopping the

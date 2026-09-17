@@ -5,6 +5,7 @@ import { describe, it } from "vite-plus/test";
 import {
   isOpenCodeV2CliVersion,
   openCodeInventoryFromV2Rest,
+  openCodeV2CredentialUrlError,
   parseAgentListCliOutput,
   parseModelsCliOutput,
   parseOpenCodeServerStartup,
@@ -374,6 +375,20 @@ describe("isOpenCodeV2CliVersion", () => {
     NodeAssert.equal(isOpenCodeV2CliVersion("1.18.30"), false);
     NodeAssert.equal(isOpenCodeV2CliVersion("2.0.0"), true);
     NodeAssert.equal(isOpenCodeV2CliVersion("2.0.6"), true);
+    NodeAssert.equal(isOpenCodeV2CliVersion("not-a-version"), false);
+    NodeAssert.equal(isOpenCodeV2CliVersion(""), false);
+  });
+});
+
+describe("openCodeV2CredentialUrlError", () => {
+  it("allows loopback HTTP and HTTPS, and rejects other HTTP with a password", () => {
+    NodeAssert.equal(openCodeV2CredentialUrlError("http://127.0.0.1:4096", "secret"), undefined);
+    NodeAssert.equal(openCodeV2CredentialUrlError("https://opencode.example", "secret"), undefined);
+    NodeAssert.equal(openCodeV2CredentialUrlError("http://example.com", undefined), undefined);
+    NodeAssert.match(
+      openCodeV2CredentialUrlError("http://example.com", "secret") ?? "",
+      /HTTPS or loopback HTTP/,
+    );
   });
 });
 
