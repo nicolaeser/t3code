@@ -8,6 +8,8 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import {
   applyOpenCodeAcpModelSelection,
   buildOpenCodeAcpSpawnInput,
+  extractOpenCodeElicitationQuestions,
+  makeOpenCodeElicitationResponse,
   openCodeAcpSpawnArgs,
   selectOpenCodePermissionOptionId,
   shouldUseOpenCodeAcp,
@@ -104,4 +106,54 @@ describe("applyOpenCodeAcpModelSelection", () => {
       ]);
     }),
   );
+});
+
+describe("OpenCode ACP elicitation", () => {
+  it("maps form fields to questions and accepted answers to content", () => {
+    const request = {
+      mode: "form",
+      sessionId: "session",
+      message: "Need a project name",
+      requestedSchema: {
+        title: "Project",
+        properties: {
+          name: { type: "string", title: "Name" },
+          kind: { type: "string", title: "Kind", enum: ["app", "lib"] },
+        },
+      },
+    } as EffectAcpSchema.ElicitationRequest;
+
+    const questions = extractOpenCodeElicitationQuestions(request);
+    NodeAssert.equal(questions[0]?.id, "name");
+    NodeAssert.equal(questions[0]?.allowCustomAnswer, true);
+    NodeAssert.equal(questions[1]?.id, "kind");
+    NodeAssert.deepEqual(
+      questions[1]?.options.map((option) => option.value),
+      ["app", "lib"],
+    );
+    NodeAssert.deepEqual(makeOpenCodeElicitationResponse(request, { name: "t3", kind: "app" }), {
+      action: { action: "accept", content: { name: "t3", kind: "app" } },
+    });
+    NodeAssert.deepEqual(makeOpenCodeElicitationResponse(request, {}), {
+      action: { action: "cancel" },
+    });
+  });
+
+  it("maps url elicitation to continue/cancel", () => {
+    const request = {
+      mode: "url",
+      sessionId: "session",
+      elicitationId: "elicit-1",
+      url: "https://example.com/login",
+      message: "Sign in",
+    } as EffectAcpSchema.ElicitationRequest;
+
+    NodeAssert.equal(extractOpenCodeElicitationQuestions(request)[0]?.id, "continue");
+    NodeAssert.deepEqual(makeOpenCodeElicitationResponse(request, { continue: "accept" }), {
+      action: { action: "accept" },
+    });
+    NodeAssert.deepEqual(makeOpenCodeElicitationResponse(request, {}), {
+      action: { action: "cancel" },
+    });
+  });
 });

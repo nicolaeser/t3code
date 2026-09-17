@@ -41,6 +41,7 @@ import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   OpenCodeRuntime,
+  isOpenCodeV2CliVersion,
   loadOpenCodeCommands,
   loadOpenCodeV2Inventory,
 } from "../opencodeRuntime.ts";
@@ -247,6 +248,9 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
                       : {}),
                     environment: processEnv,
                   });
+                  if (isOpenCodeV2CliVersion(server.version)) {
+                    return yield* loadWorkspaceFromV2Rest(server, cwd);
+                  }
                   const client = openCodeRuntime.createOpenCodeSdkClient({
                     baseUrl: server.url,
                     directory: cwd,
@@ -258,15 +262,17 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
                 }),
               )
             : serverOwner.withServer((server) =>
-                loadWorkspaceInventory(
-                  openCodeRuntime.createOpenCodeSdkClient({
-                    baseUrl: server.url,
-                    directory: cwd,
-                    ...(server.serverPassword !== undefined
-                      ? { serverPassword: server.serverPassword }
-                      : {}),
-                  }),
-                ),
+                isOpenCodeV2CliVersion(server.version)
+                  ? loadWorkspaceFromV2Rest(server, cwd)
+                  : loadWorkspaceInventory(
+                      openCodeRuntime.createOpenCodeSdkClient({
+                        baseUrl: server.url,
+                        directory: cwd,
+                        ...(server.serverPassword !== undefined
+                          ? { serverPassword: server.serverPassword }
+                          : {}),
+                      }),
+                    ),
               );
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);

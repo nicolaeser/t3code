@@ -2,6 +2,8 @@ import {
   type OpenCodeSettings,
   type ProviderApprovalDecision,
   type ProviderOptionSelection,
+  type ProviderUserInputAnswers,
+  type UserInputQuestion,
   ProviderDriverKind,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -154,6 +156,146 @@ export function applyOpenCodeAcpModelSelection<E>(input: {
       }
     }
   });
+}
+
+function nonEmpty(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+}
+
+function firstAnswer(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return nonEmpty(value);
+  }
+  if (Array.isArray(value)) {
+    const first = value.find((entry): entry is string => typeof entry === "string");
+    return first === undefined ? undefined : nonEmpty(first);
+  }
+  if (typeof value === "boolean" || typeof value === "number") {
+    return String(value);
+  }
+  return undefined;
+}
+
+function elicitationContentValue(
+  value: unknown,
+): EffectAcpSchema.ElicitationContentValue | undefined {
+  if (typeof value === "boolean" || typeof value === "number") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return undefined;
+    }
+    if (trimmed === "true") {
+      return true;
+    }
+    if (trimmed === "false") {
+      return false;
+    }
+    return trimmed;
+  }
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
+    return value;
+  }
+  return undefined;
+}
+
+export function extractOpenCodeElicitationQuestions(
+  request: EffectAcpSchema.ElicitationRequest,
+): ReadonlyArray<UserInputQuestion> {
+  if (request.mode === "url") {
+    return [
+      {
+        id: "continue",
+        header: "OpenCode",
+        question: `${request.message.trim()} ${request.url}`.trim(),
+        options: [
+          { label: "Continue", description: "Continue", value: "accept" },
+          { label: "Cancel", description: "Cancel", value: "cancel" },
+        ],
+        allowCustomAnswer: false,
+        multiSelect: false,
+      },
+    ];
+  }
+
+  const properties = request.requestedSchema.properties ?? {};
+  const questions: Array<UserInputQuestion> = [];
+  for (const [id, schema] of Object.entries(properties)) {
+    if (!nonEmpty(id) || schema === undefined) {
+      continue;
+    }
+    const question = nonEmpty(schema.title) ?? nonEmpty(schema.description) ?? id;
+    const enumValues = "enum" in schema && Array.isArray(schema.enum) ? schema.enum : undefined;
+    const oneOf = "oneOf" in schema && Array.isArray(schema.oneOf) ? schema.oneOf : undefined;
+    const options =
+      schema.type === "boolean"
+        ? [
+            { label: "Yes", description: "Yes", value: "true" },
+            { label: "No", description: "No", value: "false" },
+          ]
+        : oneOf && oneOf.length > 0
+          ? oneOf.map((option) => ({
+              label: option.title,
+              description: option.title,
+              value: option.const,
+            }))
+          : enumValues && enumValues.length > 0
+            ? enumValues.map((value) => ({
+                label: value,
+                description: value,
+                value,
+              }))
+            : [];
+    questions.push({
+      id,
+      header: nonEmpty(request.requestedSchema.title) ?? "OpenCode",
+      question,
+      options,
+      allowCustomAnswer: options.length === 0,
+      multiSelect: false,
+    });
+  }
+
+  if (questions.length === 0) {
+    return [
+      {
+        id: "response",
+        header: "OpenCode",
+        question: request.message.trim() || "OpenCode needs a response.",
+        options: [],
+        allowCustomAnswer: true,
+        multiSelect: false,
+      },
+    ];
+  }
+  return questions;
+}
+
+export function makeOpenCodeElicitationResponse(
+  request: EffectAcpSchema.ElicitationRequest,
+  answers: ProviderUserInputAnswers,
+): EffectAcpSchema.ElicitationResponse {
+  if (request.mode === "url") {
+    const decision = firstAnswer(answers.continue);
+    return {
+      action: decision === "accept" ? { action: "accept" as const } : { action: "cancel" as const },
+    };
+  }
+
+  const content: { [key: string]: EffectAcpSchema.ElicitationContentValue } = {};
+  for (const question of extractOpenCodeElicitationQuestions(request)) {
+    const value = elicitationContentValue(answers[question.id]);
+    if (value !== undefined) {
+      content[question.id] = value;
+    }
+  }
+  if (Object.keys(content).length === 0) {
+    return { action: { action: "cancel" } };
+  }
+  return { action: { action: "accept", content } };
 }
 
 export { OPENCODE_AUTH_METHOD_ID, OPENCODE_DRIVER_KIND };

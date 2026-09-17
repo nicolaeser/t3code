@@ -69,7 +69,9 @@ import {
 import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import {
   applyOpenCodeAcpModelSelection,
+  extractOpenCodeElicitationQuestions,
   makeOpenCodeAcpRuntime,
+  makeOpenCodeElicitationResponse,
   selectOpenCodePermissionOptionId,
 } from "../acp/OpenCodeAcpSupport.ts";
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
@@ -658,6 +660,43 @@ export function makeOpenCodeAcpAdapter(
                             optionId,
                           },
                   };
+                }),
+              ),
+            );
+            yield* acp.handleElicitation((params) =>
+              mapExtensionFailure(
+                Effect.gen(function* () {
+                  yield* logNative(input.threadId, "session/elicitation", params, "acp.jsonrpc");
+                  const requestId = ApprovalRequestId.make(yield* randomUUIDv4);
+                  const runtimeRequestId = RuntimeRequestId.make(requestId);
+                  const answers = yield* Deferred.make<ProviderUserInputAnswers>();
+                  pendingUserInputs.set(requestId, { answers });
+                  yield* offerRuntimeEvent({
+                    type: "user-input.requested",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: ctx?.activeTurnId,
+                    requestId: runtimeRequestId,
+                    payload: { questions: extractOpenCodeElicitationQuestions(params) },
+                    raw: {
+                      source: "acp.jsonrpc",
+                      method: "session/elicitation",
+                      payload: params,
+                    },
+                  });
+                  const resolved = yield* Deferred.await(answers);
+                  pendingUserInputs.delete(requestId);
+                  yield* offerRuntimeEvent({
+                    type: "user-input.resolved",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: ctx?.activeTurnId,
+                    requestId: runtimeRequestId,
+                    payload: { answers: resolved },
+                  });
+                  return makeOpenCodeElicitationResponse(params, resolved);
                 }),
               ),
             );
