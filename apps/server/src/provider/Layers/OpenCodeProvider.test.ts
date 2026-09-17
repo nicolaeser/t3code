@@ -167,6 +167,8 @@ const runtimeMock = {
       directory: string;
       serverPassword?: string;
     }>,
+    serverVersion: "1.14.19",
+    v2Rest: {} as Record<string, unknown>,
     inventory: {
       providerList: { connected: [] as string[], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
@@ -182,6 +184,8 @@ const runtimeMock = {
     this.state.inventoryCwd = null;
     this.state.closeCalls = 0;
     this.state.sdkClientInputs.length = 0;
+    this.state.serverVersion = "1.14.19";
+    this.state.v2Rest = {};
     this.state.inventory = {
       providerList: { connected: [], all: [] as unknown[], default: {} },
       agents: [] as unknown[],
@@ -208,7 +212,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
         ...(effectiveServerPassword !== undefined
           ? { serverPassword: effectiveServerPassword }
           : {}),
-        version: "1.14.19",
+        version: runtimeMock.state.serverVersion,
         isRunning: Effect.succeed(true),
         exitCode: Effect.never,
       };
@@ -232,7 +236,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
       return {
         url: serverUrl ?? "http://127.0.0.1:4301",
         ...(serverPassword ? { serverPassword } : {}),
-        version: "1.14.19",
+        version: runtimeMock.state.serverVersion,
         exitCode: null,
         external: Boolean(serverUrl),
       };
@@ -299,7 +303,14 @@ it("keeps native and MCP commands while preserving compaction and separate skill
   );
 });
 
+const OpenCodeV2HttpClientTest = HttpClient.make((request) => {
+  const pathname = new URL(request.url).pathname;
+  const payload = runtimeMock.state.v2Rest[pathname] ?? [];
+  return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(payload)));
+});
+
 const testLayer = Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble).pipe(
+  Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, OpenCodeV2HttpClientTest)),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -555,6 +566,45 @@ it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
       NodeAssert.equal(
         snapshot.message,
         "Failed to load OpenCode provider inventory: opencode models failed",
+      );
+    }),
+  );
+
+  it.effect("loads OpenCode 2 inventory from REST instead of the v1 SDK", () =>
+    Effect.gen(function* () {
+      runtimeMock.state.versionStdout = "opencode 2.0.6\n";
+      runtimeMock.state.serverVersion = "2.0.6";
+      runtimeMock.state.v2Rest = {
+        "/api/provider": [{ id: "xai", name: "xAI", activation: "enabled" }],
+        "/api/model": [
+          {
+            id: "grok-4.6",
+            modelID: "grok-4.6",
+            providerID: "xai",
+            name: "Grok 4.6 Fast",
+            variants: ["high"],
+          },
+        ],
+        "/api/agent": [{ id: "build", name: "Build", mode: "primary", hidden: false }],
+        "/api/skill": [
+          { name: "openclaw-review", path: "/Users/test/.agents/skills/openclaw-review/SKILL.md" },
+        ],
+        "/api/command": [{ name: "init", description: "guided AGENTS.md setup" }],
+      };
+
+      const snapshot = yield* checkProvider(makeOpenCodeSettings());
+
+      NodeAssert.equal(snapshot.status, "ready");
+      NodeAssert.equal(snapshot.version, "2.0.6");
+      NodeAssert.equal(runtimeMock.state.sdkClientInputs.length, 0);
+      NodeAssert.equal(
+        snapshot.models.some((model) => model.slug === "xai/grok-4.6"),
+        true,
+      );
+      NodeAssert.equal(snapshot.skills[0]?.name, "openclaw-review");
+      NodeAssert.equal(
+        snapshot.slashCommands.some((command) => command.name === "init"),
+        true,
       );
     }),
   );

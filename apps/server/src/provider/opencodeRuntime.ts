@@ -28,6 +28,7 @@ import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { isWindowsCommandNotFound } from "../processRunner.ts";
@@ -78,7 +79,6 @@ export function resolveOpenCodeServerPassword(
     : input.environment.OPENCODE_SERVER_PASSWORD;
 }
 
-const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
 const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 30_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
 const OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS = 64 * 1024;
@@ -140,6 +140,115 @@ export const runOpenCodeSdk = <A>(
       new OpenCodeRuntimeError({ operation, detail: openCodeRuntimeErrorDetail(cause), cause }),
   }).pipe(Effect.withSpan(`opencode.${operation}`));
 
+export function isOpenCodeV2CliVersion(version: string): boolean {
+  return compareSemverVersions(version, "2.0.0") >= 0;
+}
+
+const OpenCodeV2InfoSchema = Schema.Struct({
+  version: Schema.String,
+});
+const decodeOpenCodeV2Info = Schema.decodeUnknownEffect(OpenCodeV2InfoSchema);
+
+function openCodeBasicAuthHeader(serverPassword: string | undefined): Record<string, string> {
+  if (serverPassword === undefined || serverPassword.length === 0) {
+    return {};
+  }
+  return {
+    Authorization: `Basic ${Buffer.from(`opencode:${serverPassword}`, "utf8").toString("base64")}`,
+  };
+}
+
+const fetchOpenCodeV2Json = (input: {
+  readonly baseUrl: string;
+  readonly path: string;
+  readonly serverPassword?: string;
+  readonly directory?: string;
+}): Effect.Effect<unknown, OpenCodeRuntimeError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const url = new URL(input.path, input.baseUrl);
+    if (input.directory) {
+      url.searchParams.set("location[directory]", input.directory);
+    }
+    const headers = openCodeBasicAuthHeader(input.serverPassword);
+    let request = HttpClientRequest.get(url.toString()).pipe(
+      HttpClientRequest.setHeader("accept", "application/json"),
+    );
+    for (const [name, value] of Object.entries(headers)) {
+      request = request.pipe(HttpClientRequest.setHeader(name, value));
+    }
+    const response = yield* client.execute(request).pipe(
+      Effect.mapError(
+        (cause) =>
+          new OpenCodeRuntimeError({
+            operation: `v2.${input.path}`,
+            detail: openCodeRuntimeErrorDetail(cause),
+            cause,
+          }),
+      ),
+    );
+    if (response.status < 200 || response.status >= 300) {
+      const body = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+      return yield* new OpenCodeRuntimeError({
+        operation: `v2.${input.path}`,
+        detail: `status=${response.status} body=${body.slice(0, 500)}`,
+      });
+    }
+    return yield* response.json.pipe(
+      Effect.mapError(
+        (cause) =>
+          new OpenCodeRuntimeError({
+            operation: `v2.${input.path}`,
+            detail: openCodeRuntimeErrorDetail(cause),
+            cause,
+          }),
+      ),
+    );
+  });
+
+const fetchOpenCodeV2Info = (input: {
+  readonly baseUrl: string;
+  readonly serverPassword?: string;
+}): Effect.Effect<string, OpenCodeRuntimeError, HttpClient.HttpClient> =>
+  fetchOpenCodeV2Json({ ...input, path: "/api/info" }).pipe(
+    Effect.flatMap((payload) =>
+      decodeOpenCodeV2Info(payload).pipe(
+        Effect.mapError(
+          (cause) =>
+            new OpenCodeRuntimeError({
+              operation: "server.info",
+              detail: `OpenCode server returned an invalid /api/info response. T3 Code requires OpenCode v${MINIMUM_OPENCODE_VERSION} or newer.`,
+              cause,
+            }),
+        ),
+      ),
+    ),
+    Effect.map((info) => info.version),
+  );
+
+function acceptOpenCodeVersion(
+  version: string,
+  operation: string,
+): Effect.Effect<string, OpenCodeRuntimeError> {
+  if (parseSemver(version) === null) {
+    return Effect.fail(
+      new OpenCodeRuntimeError({
+        operation,
+        detail: `OpenCode server returned an invalid version. T3 Code requires OpenCode v${MINIMUM_OPENCODE_VERSION} or newer.`,
+      }),
+    );
+  }
+  if (compareSemverVersions(version, MINIMUM_OPENCODE_VERSION) < 0) {
+    return Effect.fail(
+      new OpenCodeRuntimeError({
+        operation,
+        detail: `OpenCode v${version} is too old. Upgrade to v${MINIMUM_OPENCODE_VERSION} or newer.`,
+      }),
+    );
+  }
+  return Effect.succeed(version);
+}
+
 export const verifyOpenCodeServerVersion = Effect.fn("verifyOpenCodeServerVersion")(function* (
   client: OpencodeClient,
 ) {
@@ -163,20 +272,27 @@ export const verifyOpenCodeServerVersion = Effect.fn("verifyOpenCodeServerVersio
         }),
     ),
   );
-  if (parseSemver(health.version) === null) {
-    return yield* new OpenCodeRuntimeError({
-      operation: "global.health",
-      detail: `OpenCode server returned an invalid version. T3 Code requires OpenCode v${MINIMUM_OPENCODE_VERSION} or newer.`,
-    });
-  }
-  if (compareSemverVersions(health.version, MINIMUM_OPENCODE_VERSION) < 0) {
-    return yield* new OpenCodeRuntimeError({
-      operation: "global.health",
-      detail: `OpenCode v${health.version} is too old. Upgrade to v${MINIMUM_OPENCODE_VERSION} or newer.`,
-    });
-  }
-  return health.version;
+  return yield* acceptOpenCodeVersion(health.version, "global.health");
 });
+
+const resolveOpenCodeServerVersion = (
+  client: OpencodeClient,
+  connection: {
+    readonly baseUrl: string;
+    readonly serverPassword?: string;
+  },
+): Effect.Effect<string, OpenCodeRuntimeError, HttpClient.HttpClient> => {
+  const fromV2Info = fetchOpenCodeV2Info(connection).pipe(
+    Effect.flatMap((version) => acceptOpenCodeVersion(version, "server.info")),
+  );
+  const fromV1Health = verifyOpenCodeServerVersion(client);
+  // OpenCode 2 local serve prints a generated password. Prefer /api/info in
+  // that case so we do not treat the v1 HTML fallback as a health payload.
+  // OpenCode 1 has no password line; keep hitting /global/health first.
+  return connection.serverPassword
+    ? fromV2Info.pipe(Effect.catch(() => fromV1Health))
+    : fromV1Health.pipe(Effect.catch(() => fromV2Info));
+};
 
 export interface OpenCodeCommandResult {
   readonly stdout: string;
@@ -192,6 +308,157 @@ export interface OpenCodeInventory {
 }
 
 export type OpenCodeSlashCommand = Pick<Command, "name" | "description" | "source" | "hints">;
+
+function readString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/** Map OpenCode 2 `/api/{provider,model,agent,skill,command}` payloads onto the v1 inventory shape. */
+export function openCodeInventoryFromV2Rest(input: {
+  readonly providers: ReadonlyArray<unknown>;
+  readonly models: ReadonlyArray<unknown>;
+  readonly agents: ReadonlyArray<unknown>;
+  readonly skills: ReadonlyArray<unknown>;
+  readonly commands: ReadonlyArray<unknown>;
+}): OpenCodeInventory {
+  const providers = new Map<
+    string,
+    { id: string; name: string; models: { [key: string]: Model } }
+  >();
+  const connected: Array<string> = [];
+
+  for (const item of input.providers) {
+    const record = asRecord(item);
+    const id = record ? readString(record, "id") : undefined;
+    if (!id) continue;
+    const name = (record ? readString(record, "name") : undefined) ?? id;
+    providers.set(id, { id, name, models: {} });
+    const activation = record ? readString(record, "activation") : undefined;
+    if (activation !== "disabled") {
+      connected.push(id);
+    }
+  }
+
+  for (const item of input.models) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const providerID = readString(record, "providerID");
+    const modelID = readString(record, "modelID") ?? readString(record, "id");
+    const name = readString(record, "name") ?? modelID;
+    if (!providerID || !modelID || !name) continue;
+    let provider = providers.get(providerID);
+    if (!provider) {
+      provider = { id: providerID, name: providerID, models: {} };
+      providers.set(providerID, provider);
+      connected.push(providerID);
+    }
+    const variantsRecord = asRecord(record.variants);
+    const variants = Array.isArray(record.variants)
+      ? Object.fromEntries(
+          record.variants
+            .filter((variant): variant is string => typeof variant === "string")
+            .map((variant) => [variant, {}]),
+        )
+      : (variantsRecord ?? {});
+    provider.models[modelID] = {
+      id: modelID,
+      providerID,
+      name,
+      variants,
+    } as Model;
+  }
+
+  const uniqueConnected = [...new Set(connected.length > 0 ? connected : [...providers.keys()])];
+  const providerList = {
+    all: [...providers.values()],
+    connected: uniqueConnected,
+    default: {},
+  } as ProviderListResponse;
+
+  const agents: Array<Agent> = [];
+  for (const item of input.agents) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const name = readString(record, "id") ?? readString(record, "name");
+    if (!name) continue;
+    const mode = readString(record, "mode") ?? "primary";
+    agents.push({
+      name,
+      mode: mode as Agent["mode"],
+      hidden: record.hidden === true,
+      permission: {},
+      options: {},
+    } as Agent);
+  }
+
+  const skills: Array<OpenCodeSkill> = [];
+  for (const item of input.skills) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const name = readString(record, "name");
+    const location = readString(record, "path") ?? readString(record, "location");
+    if (!name || !location) continue;
+    const description = readString(record, "description");
+    skills.push(description ? { name, location, description } : { name, location });
+  }
+
+  const commands: Array<OpenCodeSlashCommand> = [];
+  for (const item of input.commands) {
+    const record = asRecord(item);
+    const name = record ? readString(record, "name") : undefined;
+    if (!name) continue;
+    const description = record ? readString(record, "description") : undefined;
+    commands.push(description ? { name, hints: [], description } : { name, hints: [] });
+  }
+
+  return { providerList, agents, skills, commands };
+}
+
+export const loadOpenCodeV2Inventory = (input: {
+  readonly baseUrl: string;
+  readonly directory: string;
+  readonly serverPassword?: string;
+}): Effect.Effect<OpenCodeInventory, OpenCodeRuntimeError, HttpClient.HttpClient> =>
+  Effect.gen(function* () {
+    const request = {
+      baseUrl: input.baseUrl,
+      ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
+      directory: input.directory,
+    };
+    const [providersPayload, modelsPayload, agentsPayload, skillsPayload, commandsPayload] =
+      yield* Effect.all(
+        [
+          fetchOpenCodeV2Json({ ...request, path: "/api/provider" }),
+          fetchOpenCodeV2Json({ ...request, path: "/api/model" }),
+          fetchOpenCodeV2Json({ ...request, path: "/api/agent" }),
+          fetchOpenCodeV2Json({ ...request, path: "/api/skill" }),
+          fetchOpenCodeV2Json({ ...request, path: "/api/command" }),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+    const unwrap = (payload: unknown) => {
+      if (Array.isArray(payload)) return payload;
+      const record = asRecord(payload);
+      const data = record?.data;
+      return Array.isArray(data) ? data : [];
+    };
+
+    return openCodeInventoryFromV2Rest({
+      providers: unwrap(providersPayload),
+      models: unwrap(modelsPayload),
+      agents: unwrap(agentsPayload),
+      skills: unwrap(skillsPayload),
+      commands: unwrap(commandsPayload),
+    });
+  });
 
 /** Command templates stay in OpenCode, which expands arguments and runs MCP prompts. */
 export const loadOpenCodeCommands = (client: OpencodeClient) =>
@@ -287,15 +554,30 @@ export interface OpenCodeRuntimeShape {
   }) => Effect.Effect<ReadonlyArray<OpenCodeSkill>, OpenCodeRuntimeError>;
 }
 
-function parseServerUrlFromOutput(output: string): string | null {
+/** Strip generated serve passwords from diagnostics. Never log the raw `server password` line. */
+export function redactOpenCodeServerDiagnostics(output: string): string {
+  return output.replace(/server password\s+\S+/gi, "server password [redacted]");
+}
+
+/** @internal OpenCode 1 prints `opencode server listening on …`. OpenCode 2 prints `server listening on …` plus `server password …`. */
+export function parseOpenCodeServerStartup(output: string): {
+  readonly url: string | null;
+  readonly password: string | null;
+} {
+  let url: string | null = null;
+  let password: string | null = null;
   for (const line of output.split("\n")) {
-    if (!line.startsWith(OPENCODE_SERVER_READY_PREFIX)) {
-      continue;
+    const trimmed = line.trim();
+    const listen = trimmed.match(/^(?:opencode )?server listening on (https?:\/\/[^\s]+)/i);
+    if (listen?.[1]) {
+      url = listen[1];
     }
-    const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
-    return match?.[1] ?? null;
+    const parsedPassword = trimmed.match(/^server password\s+(\S+)/i);
+    if (parsedPassword?.[1]) {
+      password = parsedPassword[1];
+    }
   }
-  return null;
+  return { url, password };
 }
 
 const SLUG_LINE_RE = /^(\S+\/\S+)\s*$/;
@@ -592,6 +874,11 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const netService = yield* NetService.NetService;
   const hostPlatform = yield* HostProcessPlatform;
+  const httpClient = yield* HttpClient.HttpClient;
+  const withHttpClient = <A, E, R>(
+    effect: Effect.Effect<A, E, R | HttpClient.HttpClient>,
+  ): Effect.Effect<A, E, Exclude<R, HttpClient.HttpClient>> =>
+    effect.pipe(Effect.provideService(HttpClient.HttpClient, httpClient));
   const resolveCommand = (command: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) =>
     resolveSpawnCommand(command, args, env ? { env } : {});
 
@@ -755,7 +1042,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
           }
           const nextStdout = `${stdout}${chunk}`;
           return [
-            parseServerUrlFromOutput(nextStdout),
+            parseOpenCodeServerStartup(nextStdout).url,
             nextStdout.slice(-OPENCODE_SERVER_STARTUP_MAX_OUTPUT_CHARS),
           ] as const;
         }).pipe(
@@ -795,12 +1082,16 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
                 operation: "startOpenCodeServerProcess",
                 detail: [
                   `OpenCode server exited before startup completed (code: ${String(exitCode)}).`,
-                  stdout.trim() ? `stdout:\n${stdout.trim()}` : null,
-                  stderr.trim() ? `stderr:\n${stderr.trim()}` : null,
+                  stdout.trim()
+                    ? `stdout:\n${redactOpenCodeServerDiagnostics(stdout.trim())}`
+                    : null,
+                  stderr.trim()
+                    ? `stderr:\n${redactOpenCodeServerDiagnostics(stderr.trim())}`
+                    : null,
                 ]
                   .filter(Boolean)
                   .join("\n\n"),
-                cause: { exitCode, stdout, stderr },
+                cause: { exitCode },
               }),
             ).pipe(Effect.ignore);
           }),
@@ -834,24 +1125,41 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         });
       }
 
+      const url = readyOption.value;
+      let startup = parseOpenCodeServerStartup((yield* Ref.get(stdoutRef)) ?? "");
+      const bufferedStdout = (yield* Ref.get(stdoutRef)) ?? "";
+      const isV1ListenBanner = /opencode server listening on /i.test(bufferedStdout);
+      if (startup.password === null && !isV1ListenBanner) {
+        // OpenCode 2 prints `server password …` on the line after the listen
+        // banner. The v1 banner never emits a password, so skip the wait.
+        yield* Effect.sleep("150 millis");
+        startup = parseOpenCodeServerStartup((yield* Ref.get(stdoutRef)) ?? "");
+      }
+      const resolvedPassword = startup.password ?? serverPassword;
+
       // Keep draining both pipes until the process scope closes. Stopping the
       // readers can block OpenCode when its output buffers fill. Startup output
       // is no longer needed, so discard later output instead of retaining it.
       yield* Ref.set(stdoutRef, null);
       yield* Ref.set(stderrRef, null);
 
-      const url = readyOption.value;
-      const version = yield* verifyOpenCodeServerVersion(
-        createOpenCodeSdkClient({
-          baseUrl: url,
-          directory: input.directory,
-          ...(serverPassword !== undefined ? { serverPassword } : {}),
-        }),
+      const version = yield* withHttpClient(
+        resolveOpenCodeServerVersion(
+          createOpenCodeSdkClient({
+            baseUrl: url,
+            directory: input.directory,
+            ...(resolvedPassword !== undefined ? { serverPassword: resolvedPassword } : {}),
+          }),
+          {
+            baseUrl: url,
+            ...(resolvedPassword !== undefined ? { serverPassword: resolvedPassword } : {}),
+          },
+        ),
       );
 
       return {
         url,
-        ...(serverPassword !== undefined ? { serverPassword } : {}),
+        ...(resolvedPassword !== undefined ? { serverPassword: resolvedPassword } : {}),
         version,
         isRunning: child.isRunning.pipe(Effect.orElseSucceed(() => false)),
         exitCode: child.exitCode.pipe(
@@ -868,12 +1176,18 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         external: true,
         ...(input.serverPassword !== undefined ? { serverPassword: input.serverPassword } : {}),
       });
-      return verifyOpenCodeServerVersion(
-        createOpenCodeSdkClient({
-          baseUrl: serverUrl,
-          directory: input.directory,
-          ...(serverPassword !== undefined ? { serverPassword } : {}),
-        }),
+      return withHttpClient(
+        resolveOpenCodeServerVersion(
+          createOpenCodeSdkClient({
+            baseUrl: serverUrl,
+            directory: input.directory,
+            ...(serverPassword !== undefined ? { serverPassword } : {}),
+          }),
+          {
+            baseUrl: serverUrl,
+            ...(serverPassword !== undefined ? { serverPassword } : {}),
+          },
+        ),
       ).pipe(
         Effect.map((version) => ({
           url: serverUrl,
@@ -1097,4 +1411,5 @@ export class OpenCodeRuntime extends Context.Service<OpenCodeRuntime, OpenCodeRu
 
 export const OpenCodeRuntimeLive = Layer.effect(OpenCodeRuntime, makeOpenCodeRuntime).pipe(
   Layer.provide(NetService.layer),
+  Layer.provide(FetchHttpClient.layer),
 );

@@ -3,7 +3,10 @@
 Install and authenticate OpenCode on the machine running your environment, then
 enable it in **Settings > Providers**. See [provider setup](./install.md#providers).
 T3 Code requires OpenCode 1.14.19 or newer, including when you connect an existing
-OpenCode server.
+OpenCode server. OpenCode 2.x is supported locally through its ACP interface
+(`opencode acp`). Leave **Server URL** empty for that path. An explicit server
+URL still uses the HTTP helper; OpenCode 2 servers need `/api/info` to be
+reachable.
 
 ## Local or external server
 

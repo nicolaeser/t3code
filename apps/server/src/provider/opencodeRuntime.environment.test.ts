@@ -195,6 +195,7 @@ const server = createServer(async (request, response) => {
 });
 server.listen(0, "127.0.0.1", () => {
   process.stdout.write("opencode server listening on http://127.0.0.1:" + server.address().port + "\\n");
+  // OpenCode 2 prints a second line; the v1 banner must still complete without waiting for it.
 });
 `,
         );

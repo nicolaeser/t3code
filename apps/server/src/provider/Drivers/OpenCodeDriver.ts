@@ -16,6 +16,7 @@ import { OpenCodeSettings, ProviderDriverKind } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { HttpClient } from "effect/unstable/http";
@@ -26,6 +27,8 @@ import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderDriverError } from "../Errors.ts";
+import { shouldUseOpenCodeAcp } from "../acp/OpenCodeAcpSupport.ts";
+import { makeOpenCodeAcpAdapter } from "../Layers/OpenCodeAcpAdapter.ts";
 import { makeOpenCodeAdapter } from "../Layers/OpenCodeAdapter.ts";
 import { readOpenCodeGoUsageLimits } from "../Layers/openCodeUsageLimits.ts";
 import {
@@ -36,7 +39,12 @@ import {
 } from "../Layers/OpenCodeProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
-import { OpenCodeRuntime, loadOpenCodeCommands } from "../opencodeRuntime.ts";
+import {
+  OpenCodeRuntime,
+  loadOpenCodeCommands,
+  loadOpenCodeV2Inventory,
+} from "../opencodeRuntime.ts";
+import { parseGenericCliVersion } from "../providerSnapshot.ts";
 import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -132,11 +140,33 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
         ),
       );
 
-      const adapter = yield* makeOpenCodeAdapter(effectiveConfig, {
-        instanceId,
-        environment: processEnv,
-        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+      const versionProbe = yield* openCodeRuntime
+        .runOpenCodeCommand({
+          binaryPath: effectiveConfig.binaryPath,
+          args: ["--version"],
+          environment: processEnv,
+        })
+        .pipe(Effect.option);
+      const cliVersion = Option.isSome(versionProbe)
+        ? parseGenericCliVersion(versionProbe.value.stdout)
+        : null;
+      // OpenCode 2's HTTP API is not the v1 SDK surface. Local 2.x CLIs speak
+      // ACP (`opencode acp`). An explicit server URL stays on the HTTP adapter.
+      const useOpenCodeAcp = shouldUseOpenCodeAcp({
+        serverUrl: effectiveConfig.serverUrl,
+        cliVersion,
       });
+      const adapter = useOpenCodeAcp
+        ? yield* makeOpenCodeAcpAdapter(effectiveConfig, {
+            instanceId,
+            environment: processEnv,
+            ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+          })
+        : yield* makeOpenCodeAdapter(effectiveConfig, {
+            instanceId,
+            environment: processEnv,
+            ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+          });
       const serverOwner = yield* OpenCodeServerOwner.make({
         binaryPath: effectiveConfig.binaryPath,
         directory: serverConfig.cwd,
@@ -187,40 +217,57 @@ export const OpenCodeDriver: ProviderDriver<OpenCodeSettings, OpenCodeDriverEnv>
           },
           { concurrency: "unbounded" },
         );
+      const loadWorkspaceFromV2Rest = (
+        server: { readonly url: string; readonly serverPassword?: string },
+        cwd: string,
+      ) =>
+        loadOpenCodeV2Inventory({
+          baseUrl: server.url,
+          directory: cwd,
+          ...(server.serverPassword !== undefined ? { serverPassword: server.serverPassword } : {}),
+        }).pipe(
+          Effect.map((inventory) => ({
+            skills: inventory.skills,
+            commands: inventory.commands ?? [],
+          })),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
+        );
       const loadWorkspaceForCwd = (cwd: string) =>
-        effectiveConfig.serverUrl.trim().length > 0
-          ? Effect.scoped(
-              Effect.gen(function* () {
-                const server = yield* openCodeRuntime.connectToOpenCodeServer({
-                  binaryPath: effectiveConfig.binaryPath,
-                  directory: cwd,
-                  serverUrl: effectiveConfig.serverUrl,
-                  ...(effectiveConfig.serverPassword
-                    ? { serverPassword: effectiveConfig.serverPassword }
-                    : {}),
-                  environment: processEnv,
-                });
-                const client = openCodeRuntime.createOpenCodeSdkClient({
-                  baseUrl: server.url,
-                  directory: cwd,
-                  ...(effectiveConfig.serverPassword
-                    ? { serverPassword: effectiveConfig.serverPassword }
-                    : {}),
-                });
-                return yield* loadWorkspaceInventory(client);
-              }),
-            )
-          : serverOwner.withServer((server) =>
-              loadWorkspaceInventory(
-                openCodeRuntime.createOpenCodeSdkClient({
-                  baseUrl: server.url,
-                  directory: cwd,
-                  ...(server.serverPassword !== undefined
-                    ? { serverPassword: server.serverPassword }
-                    : {}),
+        useOpenCodeAcp
+          ? serverOwner.withServer((server) => loadWorkspaceFromV2Rest(server, cwd))
+          : effectiveConfig.serverUrl.trim().length > 0
+            ? Effect.scoped(
+                Effect.gen(function* () {
+                  const server = yield* openCodeRuntime.connectToOpenCodeServer({
+                    binaryPath: effectiveConfig.binaryPath,
+                    directory: cwd,
+                    serverUrl: effectiveConfig.serverUrl,
+                    ...(effectiveConfig.serverPassword
+                      ? { serverPassword: effectiveConfig.serverPassword }
+                      : {}),
+                    environment: processEnv,
+                  });
+                  const client = openCodeRuntime.createOpenCodeSdkClient({
+                    baseUrl: server.url,
+                    directory: cwd,
+                    ...(effectiveConfig.serverPassword
+                      ? { serverPassword: effectiveConfig.serverPassword }
+                      : {}),
+                  });
+                  return yield* loadWorkspaceInventory(client);
                 }),
-              ),
-            );
+              )
+            : serverOwner.withServer((server) =>
+                loadWorkspaceInventory(
+                  openCodeRuntime.createOpenCodeSdkClient({
+                    baseUrl: server.url,
+                    directory: cwd,
+                    ...(server.serverPassword !== undefined
+                      ? { serverPassword: server.serverPassword }
+                      : {}),
+                  }),
+                ),
+              );
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
       const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<OpenCodeSettings>>(

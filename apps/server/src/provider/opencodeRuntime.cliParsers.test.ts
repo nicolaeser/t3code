@@ -3,9 +3,13 @@ import * as NodeAssert from "node:assert/strict";
 import { describe, it } from "vite-plus/test";
 
 import {
+  isOpenCodeV2CliVersion,
+  openCodeInventoryFromV2Rest,
   parseAgentListCliOutput,
   parseModelsCliOutput,
+  parseOpenCodeServerStartup,
   parseSkillsCliOutput,
+  redactOpenCodeServerDiagnostics,
   toOpenCodeFileParts,
 } from "./opencodeRuntime.ts";
 
@@ -331,5 +335,70 @@ describe("toOpenCodeFileParts", () => {
     });
 
     NodeAssert.deepEqual(parts, []);
+  });
+});
+
+describe("parseOpenCodeServerStartup", () => {
+  it("parses the OpenCode 1 listen banner", () => {
+    const parsed = parseOpenCodeServerStartup(
+      "opencode server listening on http://127.0.0.1:4096\n",
+    );
+    NodeAssert.equal(parsed.url, "http://127.0.0.1:4096");
+    NodeAssert.equal(parsed.password, null);
+  });
+
+  it("parses the OpenCode 2 listen banner and generated password", () => {
+    const parsed = parseOpenCodeServerStartup(
+      ["server listening on http://127.0.0.1:49152", "server password abc_DEF-123", ""].join("\n"),
+    );
+    NodeAssert.equal(parsed.url, "http://127.0.0.1:49152");
+    NodeAssert.equal(parsed.password, "abc_DEF-123");
+  });
+});
+
+describe("redactOpenCodeServerDiagnostics", () => {
+  it("redacts generated serve passwords from startup output", () => {
+    NodeAssert.equal(
+      redactOpenCodeServerDiagnostics(
+        ["server listening on http://127.0.0.1:49152", "server password abc_DEF-123", ""].join(
+          "\n",
+        ),
+      ),
+      ["server listening on http://127.0.0.1:49152", "server password [redacted]", ""].join("\n"),
+    );
+  });
+});
+
+describe("isOpenCodeV2CliVersion", () => {
+  it("treats 2.0.0 and newer as OpenCode 2", () => {
+    NodeAssert.equal(isOpenCodeV2CliVersion("1.18.30"), false);
+    NodeAssert.equal(isOpenCodeV2CliVersion("2.0.0"), true);
+    NodeAssert.equal(isOpenCodeV2CliVersion("2.0.6"), true);
+  });
+});
+
+describe("openCodeInventoryFromV2Rest", () => {
+  it("groups models under connected providers and maps skill paths", () => {
+    const inventory = openCodeInventoryFromV2Rest({
+      providers: [{ id: "xai", name: "xAI", activation: "enabled" }],
+      models: [
+        {
+          id: "grok-4.6",
+          modelID: "grok-4.6",
+          providerID: "xai",
+          name: "Grok 4.6 Fast",
+          variants: ["low", "high"],
+        },
+      ],
+      agents: [{ id: "build", name: "Build", mode: "primary", hidden: false }],
+      skills: [{ name: "OpenCode", path: "/builtin/opencode.md", description: "docs" }],
+      commands: [{ name: "init", description: "guided AGENTS.md setup" }],
+    });
+
+    NodeAssert.deepEqual(inventory.providerList.connected, ["xai"]);
+    NodeAssert.equal(inventory.providerList.all[0]?.models["grok-4.6"]?.name, "Grok 4.6 Fast");
+    NodeAssert.equal(inventory.agents[0]?.name, "build");
+    NodeAssert.equal(inventory.skills[0]?.location, "/builtin/opencode.md");
+    NodeAssert.equal(inventory.commands?.[0]?.name, "init");
   });
 });

@@ -9,6 +9,7 @@ import * as Cause from "effect/Cause";
 import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import { HttpClient } from "effect/unstable/http";
 
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { compareSemverVersions } from "@t3tools/shared/semver";
@@ -23,6 +24,8 @@ import {
 import {
   MINIMUM_OPENCODE_VERSION,
   OpenCodeRuntime,
+  isOpenCodeV2CliVersion,
+  loadOpenCodeV2Inventory,
   openCodeRuntimeErrorDetail,
   type OpenCodeInventory,
 } from "../opencodeRuntime.ts";
@@ -388,7 +391,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
-  OpenCodeRuntime | OpenCodeServerOwner.OpenCodeServerOwner
+  OpenCodeRuntime | OpenCodeServerOwner.OpenCodeServerOwner | HttpClient.HttpClient
 > {
   const openCodeRuntime = yield* OpenCodeRuntime;
   const serverOwner = yield* OpenCodeServerOwner.OpenCodeServerOwner;
@@ -499,16 +502,19 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     readonly url: string;
     readonly serverPassword?: string;
     readonly version: string;
-  }) =>
-    openCodeRuntime
-      .loadOpenCodeInventory(
-        openCodeRuntime.createOpenCodeSdkClient({
-          baseUrl: server.url,
-          directory: cwd,
-          ...(server.serverPassword !== undefined ? { serverPassword: server.serverPassword } : {}),
-        }),
-      )
-      .pipe(Effect.map((inventory) => ({ inventory, version: server.version })));
+  }) => {
+    const connection = {
+      baseUrl: server.url,
+      directory: cwd,
+      ...(server.serverPassword !== undefined ? { serverPassword: server.serverPassword } : {}),
+    };
+    const inventoryEffect = isOpenCodeV2CliVersion(server.version)
+      ? loadOpenCodeV2Inventory(connection)
+      : openCodeRuntime.loadOpenCodeInventory(openCodeRuntime.createOpenCodeSdkClient(connection));
+    return inventoryEffect.pipe(
+      Effect.map((inventory) => ({ inventory, version: server.version })),
+    );
+  };
   const inventoryEffect = isExternalServer
     ? openCodeRuntime
         .connectToOpenCodeServer({

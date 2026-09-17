@@ -11,12 +11,18 @@ session or catalog state.
 
 ## Process and account isolation
 
-T3-managed OpenCode chat uses one server per thread. Its MCP registrations are directory-scoped, while
+T3-managed OpenCode 1 chat uses one HTTP server per thread. Its MCP registrations are directory-scoped, while
 T3's MCP connection is thread-scoped. Sharing a chat server between threads in one directory would
 let them replace each other's connection. Catalog and text-generation work can share the
 [instance-owned helper](../../apps/server/src/provider/OpenCodeServerOwner.ts), which closes
 after an idle period. External OpenCode servers remain externally owned and can require an
 external restart to pick up configuration changes.
+
+OpenCode 2.x dropped the v1 HTTP session API (`/global/health`, `/session/.../prompt_async`).
+Local 2.x CLIs are driven through ACP (`opencode acp`) so each thread still owns a process.
+Catalog probes use `/api/info` plus `/api/model` (and related list endpoints) instead of the
+v1 SDK routes. The v1 listen banner is `opencode server listening on …`; 2.x prints
+`server listening on …` and `server password …`.
 
 OpenCode also stores persistent approval grants per directory. Automatic full-access replies use
 `once` so they cannot widen a supervised thread's permissions on a shared external server.
