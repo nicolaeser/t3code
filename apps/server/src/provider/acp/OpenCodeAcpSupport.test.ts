@@ -134,9 +134,89 @@ describe("OpenCode ACP elicitation", () => {
     NodeAssert.deepEqual(makeOpenCodeElicitationResponse(request, { name: "t3", kind: "app" }), {
       action: { action: "accept", content: { name: "t3", kind: "app" } },
     });
+    NodeAssert.deepEqual(makeOpenCodeElicitationResponse(request, { name: "true" }), {
+      action: { action: "accept", content: { name: "true" } },
+    });
     NodeAssert.deepEqual(makeOpenCodeElicitationResponse(request, {}), {
       action: { action: "cancel" },
     });
+  });
+
+  it("parses numeric and boolean fields according to the schema", () => {
+    const request = {
+      mode: "form",
+      sessionId: "session",
+      message: "Config",
+      requestedSchema: {
+        properties: {
+          count: { type: "integer", title: "Count" },
+          ratio: { type: "number", title: "Ratio" },
+          enabled: { type: "boolean", title: "Enabled" },
+        },
+      },
+    } as EffectAcpSchema.ElicitationRequest;
+
+    NodeAssert.deepEqual(
+      makeOpenCodeElicitationResponse(request, {
+        count: "3",
+        ratio: "1.5",
+        enabled: "true",
+      }),
+      {
+        action: {
+          action: "accept",
+          content: { count: 3, ratio: 1.5, enabled: true },
+        },
+      },
+    );
+  });
+
+  it("maps array schemas to multi-select questions", () => {
+    const request = {
+      mode: "form",
+      sessionId: "session",
+      message: "Pick tags",
+      requestedSchema: {
+        properties: {
+          tags: {
+            type: "array",
+            title: "Tags",
+            items: { type: "string", enum: ["cli", "tui"] },
+          },
+          roles: {
+            type: "array",
+            title: "Roles",
+            items: {
+              anyOf: [
+                { const: "build", title: "Build" },
+                { const: "plan", title: "Plan" },
+              ],
+            },
+          },
+        },
+      },
+    } as EffectAcpSchema.ElicitationRequest;
+
+    const questions = extractOpenCodeElicitationQuestions(request);
+    NodeAssert.equal(questions[0]?.multiSelect, true);
+    NodeAssert.deepEqual(
+      questions[0]?.options.map((option) => option.value),
+      ["cli", "tui"],
+    );
+    NodeAssert.equal(questions[1]?.multiSelect, true);
+    NodeAssert.deepEqual(
+      questions[1]?.options.map((option) => option.value),
+      ["build", "plan"],
+    );
+    NodeAssert.deepEqual(
+      makeOpenCodeElicitationResponse(request, { tags: ["cli", "tui"], roles: ["plan"] }),
+      {
+        action: {
+          action: "accept",
+          content: { tags: ["cli", "tui"], roles: ["plan"] },
+        },
+      },
+    );
   });
 
   it("maps url elicitation to continue/cancel", () => {

@@ -177,27 +177,89 @@ function firstAnswer(value: unknown): string | undefined {
   return undefined;
 }
 
+function choiceOptions(
+  schema: EffectAcpSchema.ElicitationPropertySchema,
+): Array<{ label: string; description: string; value: string }> {
+  if (schema.type === "boolean") {
+    return [
+      { label: "Yes", description: "Yes", value: "true" },
+      { label: "No", description: "No", value: "false" },
+    ];
+  }
+  if (schema.type === "string") {
+    if (schema.oneOf && schema.oneOf.length > 0) {
+      return schema.oneOf.map((option) => ({
+        label: option.title,
+        description: option.title,
+        value: option.const,
+      }));
+    }
+    if (schema.enum && schema.enum.length > 0) {
+      return schema.enum.map((value) => ({
+        label: value,
+        description: value,
+        value,
+      }));
+    }
+  }
+  if (schema.type === "array") {
+    if ("enum" in schema.items) {
+      return schema.items.enum.map((value) => ({
+        label: value,
+        description: value,
+        value,
+      }));
+    }
+    return schema.items.anyOf.map((option) => ({
+      label: option.title,
+      description: option.title,
+      value: option.const,
+    }));
+  }
+  return [];
+}
+
 function elicitationContentValue(
   value: unknown,
+  schema: EffectAcpSchema.ElicitationPropertySchema | undefined,
 ): EffectAcpSchema.ElicitationContentValue | undefined {
-  if (typeof value === "boolean" || typeof value === "number") {
-    return value;
+  if (schema?.type === "array") {
+    const raw = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+    const values = raw
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    return values.length > 0 ? values : undefined;
   }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed.length === 0) {
-      return undefined;
+  if (schema?.type === "boolean") {
+    if (typeof value === "boolean") {
+      return value;
     }
-    if (trimmed === "true") {
+    const text = firstAnswer(value);
+    if (text === "true") {
       return true;
     }
-    if (trimmed === "false") {
+    if (text === "false") {
       return false;
     }
-    return trimmed;
+    return undefined;
   }
-  if (Array.isArray(value) && value.every((entry) => typeof entry === "string")) {
-    return value;
+  if (schema?.type === "integer" || schema?.type === "number") {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return schema.type === "integer" ? Math.trunc(value) : value;
+    }
+    const text = firstAnswer(value);
+    if (text === undefined) {
+      return undefined;
+    }
+    const parsed = schema.type === "integer" ? Number.parseInt(text, 10) : Number.parseFloat(text);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  if (typeof value === "string") {
+    return nonEmpty(value);
+  }
+  if (typeof value === "boolean" || typeof value === "number") {
+    return String(value);
   }
   return undefined;
 }
@@ -228,34 +290,14 @@ export function extractOpenCodeElicitationQuestions(
       continue;
     }
     const question = nonEmpty(schema.title) ?? nonEmpty(schema.description) ?? id;
-    const enumValues = "enum" in schema && Array.isArray(schema.enum) ? schema.enum : undefined;
-    const oneOf = "oneOf" in schema && Array.isArray(schema.oneOf) ? schema.oneOf : undefined;
-    const options =
-      schema.type === "boolean"
-        ? [
-            { label: "Yes", description: "Yes", value: "true" },
-            { label: "No", description: "No", value: "false" },
-          ]
-        : oneOf && oneOf.length > 0
-          ? oneOf.map((option) => ({
-              label: option.title,
-              description: option.title,
-              value: option.const,
-            }))
-          : enumValues && enumValues.length > 0
-            ? enumValues.map((value) => ({
-                label: value,
-                description: value,
-                value,
-              }))
-            : [];
+    const options = choiceOptions(schema);
     questions.push({
       id,
       header: nonEmpty(request.requestedSchema.title) ?? "OpenCode",
       question,
       options,
       allowCustomAnswer: options.length === 0,
-      multiSelect: false,
+      multiSelect: schema.type === "array",
     });
   }
 
@@ -286,8 +328,9 @@ export function makeOpenCodeElicitationResponse(
   }
 
   const content: { [key: string]: EffectAcpSchema.ElicitationContentValue } = {};
+  const properties = request.requestedSchema.properties ?? {};
   for (const question of extractOpenCodeElicitationQuestions(request)) {
-    const value = elicitationContentValue(answers[question.id]);
+    const value = elicitationContentValue(answers[question.id], properties[question.id]);
     if (value !== undefined) {
       content[question.id] = value;
     }
