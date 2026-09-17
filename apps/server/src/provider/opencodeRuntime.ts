@@ -322,6 +322,18 @@ const resolveOpenCodeServerVersion = (
     readonly serverPassword?: string;
   },
 ): Effect.Effect<string, OpenCodeRuntimeError, HttpClient.HttpClient> => {
+  const credentialError = openCodeV2CredentialUrlError(
+    connection.baseUrl,
+    connection.serverPassword,
+  );
+  if (credentialError) {
+    return Effect.fail(
+      new OpenCodeRuntimeError({
+        operation: "server.info",
+        detail: credentialError,
+      }),
+    );
+  }
   const fromV2Info = fetchOpenCodeV2Info(connection).pipe(
     Effect.flatMap((version) => acceptOpenCodeVersion(version, "server.info")),
   );
@@ -993,7 +1005,8 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     createOpencodeClient({
       baseUrl: input.baseUrl,
       directory: input.directory,
-      ...(input.serverPassword
+      ...(input.serverPassword &&
+      openCodeV2CredentialUrlError(input.baseUrl, input.serverPassword) === undefined
         ? {
             headers: {
               Authorization: `Basic ${Buffer.from(`opencode:${input.serverPassword}`, "utf8").toString("base64")}`,

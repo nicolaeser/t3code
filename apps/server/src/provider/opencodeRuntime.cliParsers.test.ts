@@ -390,6 +390,13 @@ describe("openCodeV2CredentialUrlError", () => {
       /HTTPS or loopback HTTP/,
     );
   });
+
+  it("does not treat a policy failure as a missing password", () => {
+    NodeAssert.notEqual(
+      openCodeV2CredentialUrlError("http://203.0.113.10:4096", "secret"),
+      undefined,
+    );
+  });
 });
 
 describe("openCodeInventoryFromV2Rest", () => {
