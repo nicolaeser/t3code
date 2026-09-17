@@ -220,13 +220,12 @@ const fetchOpenCodeV2Json = (input: {
       request = request.pipe(HttpClientRequest.setHeader(name, value));
     }
     const response = yield* client.execute(request).pipe(
-      Effect.timeout(OPENCODE_HEALTH_TIMEOUT),
       Effect.mapError((cause) =>
         OpenCodeRuntimeError.is(cause)
           ? cause
           : new OpenCodeRuntimeError({
               operation: `v2.${input.path}`,
-              detail: `Timed out or failed requesting ${input.path}: ${openCodeRuntimeErrorDetail(cause)}`,
+              detail: `Failed requesting ${input.path}: ${openCodeRuntimeErrorDetail(cause)}`,
               cause,
             }),
       ),
@@ -248,7 +247,18 @@ const fetchOpenCodeV2Json = (input: {
           }),
       ),
     );
-  });
+  }).pipe(
+    Effect.timeout(OPENCODE_HEALTH_TIMEOUT),
+    Effect.mapError((cause) =>
+      OpenCodeRuntimeError.is(cause)
+        ? cause
+        : new OpenCodeRuntimeError({
+            operation: `v2.${input.path}`,
+            detail: `Timed out requesting ${input.path}: ${openCodeRuntimeErrorDetail(cause)}`,
+            cause,
+          }),
+    ),
+  );
 
 /** Read the OpenCode 2 `/api/info` version string. */
 const fetchOpenCodeV2Info = (input: {
