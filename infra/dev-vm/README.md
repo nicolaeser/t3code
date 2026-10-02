@@ -34,6 +34,8 @@ of GitLab instances (gitlab.com or self-hosted; device code, browser, or token).
 device login needs an OAuth application `client_id` on the instance; a personal access token with
 `api`, `read_repository`, `write_repository` is the simpler path.
 
-After the accounts are verified the script runs `t3 connect`, then prints the remaining manual
+After the accounts are verified the script enables linger for `agent` and starts its systemd
+user manager (T3 installs its background service there; `runuser` alone opens no session),
+then runs `t3 connect`, then prints the remaining manual
 logins: `su - agent`, then `claude` (`/login`), `codex login` and `grok`. Add accounts later with
 `bash /home/agent/vm-bootstrap.sh --only git`.

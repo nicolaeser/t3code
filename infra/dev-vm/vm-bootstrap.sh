@@ -156,6 +156,32 @@ step_codex() {
   ok "codex $(codex --version 2>/dev/null || echo installed)"
 }
 
+ensure_user_manager() {
+  local uid bus i rc
+  uid="$(id -u)"
+  apt_install dbus-user-session libpam-systemd >/dev/null
+  sudo loginctl enable-linger "$USER"
+  export XDG_RUNTIME_DIR="/run/user/${uid}"
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"
+  for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+    touch "$rc"
+    grep -qF 'XDG_RUNTIME_DIR=/run/user/' "$rc" || printf '\n%s\n' \
+      '[ -z "$XDG_RUNTIME_DIR" ] && export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus' >>"$rc"
+  done
+  sudo systemctl start "user@${uid}.service"
+  bus="${XDG_RUNTIME_DIR}/bus"
+  for i in 1 2; do
+    for _ in $(seq 1 20); do [[ -S "$bus" ]] && break; sleep 0.5; done
+    [[ -S "$bus" ]] && break
+    [[ $i == 1 ]] && sudo systemctl restart "user@${uid}.service"
+  done
+  if systemctl --user show-environment >/dev/null 2>&1; then
+    ok "systemd user manager running for $USER (linger on)"
+  else
+    warn "systemd user manager for $USER not reachable — t3 background service may fail"
+  fi
+}
+
 step_t3() {
   step "t3"
   sudo npm install -g t3@latest >/dev/null
@@ -327,6 +353,7 @@ step_git() {
   if command -v t3 >/dev/null; then
     echo
     printf '  %st3 connect%s\n' "$C_BOLD" "$C_RESET"
+    ensure_user_manager
     t3 connect </dev/tty || warn "t3 connect did not finish — run later: t3 connect"
   else
     warn "t3 not installed — run 't3 connect' after installing it"
