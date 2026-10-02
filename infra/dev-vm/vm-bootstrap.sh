@@ -227,6 +227,42 @@ git_system_setup() {
   sudo git config --system core.askPass ""
   sudo git config --system safe.directory '*'
   printf 'export GIT_TERMINAL_PROMPT=0\nexport GIT_ASKPASS=\n' | sudo tee /etc/profile.d/git-noprompt.sh >/dev/null
+  install_branch_helper
+}
+
+install_branch_helper() {
+  sudo tee /usr/local/bin/git-all-branches >/dev/null <<'EOF'
+#!/usr/bin/env bash
+# Make repos fetch every branch (undoes --single-branch / --depth clones).
+# Usage: git-all-branches [repo-or-dir ...]   (default: $HOME)
+fix_repo() {
+  local repo="$1" r spec
+  for r in $(git -C "$repo" remote); do
+    spec="+refs/heads/*:refs/remotes/$r/*"
+    [[ "$(git -C "$repo" config --get-all "remote.$r.fetch")" == "$spec" ]] && continue
+    git -C "$repo" config --replace-all "remote.$r.fetch" "$spec"
+    git -C "$repo" fetch -q "$r" && echo "all branches: $repo ($r)"
+  done
+}
+[[ $# -gt 0 ]] || set -- "$HOME"
+for d in "$@"; do
+  if git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    fix_repo "$(git -C "$d" rev-parse --show-toplevel)"
+  else
+    find "$d" -maxdepth 6 -name node_modules -prune -o -name .git -print 2>/dev/null \
+      | while read -r g; do fix_repo "$(dirname "$g")"; done
+  fi
+done
+EOF
+  sudo chmod 0755 /usr/local/bin/git-all-branches
+  sudo install -d -m 0755 /usr/local/share/git-templates/hooks
+  sudo tee /usr/local/share/git-templates/hooks/post-checkout >/dev/null <<'EOF'
+#!/bin/sh
+/usr/local/bin/git-all-branches . >/dev/null 2>&1
+exit 0
+EOF
+  sudo chmod 0755 /usr/local/share/git-templates/hooks/post-checkout
+  sudo git config --system init.templateDir /usr/local/share/git-templates
 }
 
 store_git_credential() {
@@ -349,6 +385,7 @@ step_git() {
   git config --global user.email "$mail";  sudo git config --system user.email "$mail"
 
   account_hub
+  git-all-branches "$HOME" || true
 
   if command -v t3 >/dev/null; then
     echo
