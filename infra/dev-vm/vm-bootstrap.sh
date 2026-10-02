@@ -213,15 +213,16 @@ store_git_credential() {
 }
 
 agent_git_check() {
-  env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent GIT_TERMINAL_PROMPT=0 \
-      git ls-remote "$1" HEAD >/dev/null 2>&1
+  sudo -u "$USER" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/nonexistent GIT_TERMINAL_PROMPT=0 \
+      git ls-remote "$1" HEAD 2>&1 >/dev/null | sed 's/^/      /' >&2
+  return "${PIPESTATUS[0]}"
 }
 
 verify_host() {
   local host="$1" url="$2"
   [[ -n "$url" ]] || { warn "$host: no repo on this account to test with"; return; }
   if agent_git_check "$url"; then ok "$host: agent-mode git works → $url"
-  else fail "$host: agent-mode git FAILED for $url (token scopes?)"; fi
+  else fail "$host: agent-mode git FAILED for $url"; fi
 }
 
 login_github_account() {
