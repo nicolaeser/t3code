@@ -28,9 +28,6 @@ prompts disabled`. The `git` step therefore:
 - sets `credential.helper` in `/etc/gitconfig` to that store and clears `core.askPass`
 - sets `GIT_TERMINAL_PROMPT=0` system-wide so a missing credential fails fast instead of hanging
 - verifies each account with `env -i HOME=/nonexistent git ls-remote` against one of its repos
-- installs `git-all-branches` and a `post-checkout` template hook (`init.templateDir`), so every
-  clone, including shallow or `--single-branch` ones, fetches all branches; run
-  `git-all-branches [dir]` to fix repos cloned before
 
 Accounts are added from an interactive menu: GitHub (browser/device code or token) and any number
 of GitLab instances (gitlab.com or self-hosted; device code, browser, or token). Self-hosted GitLab
